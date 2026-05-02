@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Proof of Personhood Protocol"
+version = "1.0.0"
+id = "artifacts/protocol-site"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 25094
+
+[services.development]
+run = "pnpm --filter @workspace/protocol-site run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/protocol-site", "run", "build" ]
+publicDir = "artifacts/protocol-site/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "25094"
+BASE_PATH = "/"
