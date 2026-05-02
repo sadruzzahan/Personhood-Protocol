@@ -1,5 +1,9 @@
 import { useState } from "react";
-import { useCheckNullifier, getCheckNullifierQueryKey } from "@workspace/api-client-react";
+import {
+  useCheckNullifier,
+  getCheckNullifierQueryKey,
+  useVerifyProof,
+} from "@workspace/api-client-react";
 
 const CODE_SNIPPETS: Record<string, string> = {
   JavaScript: `import {
@@ -179,13 +183,39 @@ export function Developers() {
   const [lang, setLang] = useState<keyof typeof CODE_SNIPPETS>("JavaScript");
   const [nullifierInput, setNullifierInput] = useState("");
   const [queryHash, setQueryHash] = useState("");
+  const [playgroundTab, setPlaygroundTab] = useState<"nullifier" | "verify">("nullifier");
+  const [verifyProof, setVerifyProof] = useState("");
+  const [verifyNullifier, setVerifyNullifier] = useState("");
+  const [verifyContext, setVerifyContext] = useState("proof-of-personhood-demo");
+  const [verifyResult, setVerifyResult] = useState<{
+    verified: boolean; humanBadge?: string; verifiedAt: string; message: string;
+  } | null>(null);
 
   const { data: nullifierData, isLoading, isFetching } = useCheckNullifier(queryHash, {
     query: { enabled: !!queryHash, queryKey: getCheckNullifierQueryKey(queryHash) },
   });
 
+  const verifyMutation = useVerifyProof();
+
   function runNullifierCheck() {
     setQueryHash(nullifierInput.trim());
+  }
+
+  function runVerify() {
+    setVerifyResult(null);
+    verifyMutation.mutate(
+      { data: { proof: verifyProof.trim(), nullifier: verifyNullifier.trim(), appContext: verifyContext.trim() } },
+      {
+        onSuccess: (result) => {
+          setVerifyResult({
+            verified: result.verified,
+            humanBadge: result.humanBadge,
+            verifiedAt: result.verifiedAt,
+            message: result.message,
+          });
+        },
+      }
+    );
   }
 
   return (
@@ -259,52 +289,132 @@ export function Developers() {
         <section data-testid="section-playground">
           <h2 className="text-2xl font-medium mb-2">Live Playground</h2>
           <p className="text-sm text-muted-foreground mb-6">
-            Check a nullifier hash in real time. Run the <a href="/demo" className="text-primary hover:underline">demo</a> first to get a valid nullifier.
+            Call the API in real time. Run the <a href="/demo" className="text-primary hover:underline">demo</a> first to get a valid nullifier for both tabs.
           </p>
-          <div className="border border-border">
-            <div className="border-b border-border p-4 flex items-center gap-2 font-mono text-xs text-muted-foreground">
-              <MethodBadge method="GET" />
-              <span className="text-foreground">/api/nullifier/</span>
-              <span className="text-primary">:hash</span>
-            </div>
-            <div className="p-6 flex flex-col gap-4">
-              <div className="flex gap-0">
-                <input
-                  type="text"
-                  className="flex-1 border border-border bg-background px-4 py-3 font-mono text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary transition-colors"
-                  placeholder="Paste a nullifier hash here..."
-                  value={nullifierInput}
-                  onChange={e => setNullifierInput(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && runNullifierCheck()}
-                  data-testid="input-nullifier"
-                />
-                <button
-                  className="border border-l-0 border-primary bg-primary text-primary-foreground px-6 py-3 font-mono text-xs hover:bg-primary/90 transition-colors disabled:opacity-50"
-                  onClick={runNullifierCheck}
-                  disabled={!nullifierInput.trim() || isLoading}
-                  data-testid="button-check-nullifier"
-                >
-                  {isFetching ? "..." : "RUN"}
-                </button>
-              </div>
 
-              {nullifierData && queryHash && (
-                <div className="border border-border bg-card p-4" data-testid="playground-result">
-                  <p className="font-mono text-xs text-muted-foreground mb-2">RESPONSE</p>
-                  <pre className="font-mono text-xs text-foreground/80 whitespace-pre-wrap leading-relaxed">
-{JSON.stringify({
-  hash: nullifierData.hash,
-  used: nullifierData.used,
-  ...(nullifierData.registeredAt ? { registeredAt: nullifierData.registeredAt } : {}),
-}, null, 2)}
-                  </pre>
-                  <div className={`mt-3 inline-flex items-center gap-2 font-mono text-xs ${nullifierData.used ? 'text-primary' : 'text-muted-foreground'}`}>
-                    <div className={`w-2 h-2 ${nullifierData.used ? 'bg-primary' : 'bg-border'}`} />
-                    {nullifierData.used ? "Nullifier registered" : "Nullifier not found"}
+          {/* Tab switcher */}
+          <div className="border border-border mb-0">
+            <div className="flex border-b border-border">
+              <button
+                onClick={() => setPlaygroundTab("nullifier")}
+                className={`px-5 py-3 font-mono text-xs border-r border-border transition-colors flex items-center gap-2 ${playgroundTab === "nullifier" ? 'bg-card text-primary' : 'text-muted-foreground hover:text-foreground'}`}
+                data-testid="tab-playground-nullifier"
+              >
+                <MethodBadge method="GET" /> /api/nullifier/:hash
+              </button>
+              <button
+                onClick={() => setPlaygroundTab("verify")}
+                className={`px-5 py-3 font-mono text-xs transition-colors flex items-center gap-2 ${playgroundTab === "verify" ? 'bg-card text-primary' : 'text-muted-foreground hover:text-foreground'}`}
+                data-testid="tab-playground-verify"
+              >
+                <MethodBadge method="POST" /> /api/verify
+              </button>
+            </div>
+
+            {/* GET /api/nullifier/:hash */}
+            {playgroundTab === "nullifier" && (
+              <div className="p-6 flex flex-col gap-4" data-testid="playground-nullifier">
+                <p className="font-mono text-xs text-muted-foreground">Paste a nullifier hash to check if it has been registered.</p>
+                <div className="flex gap-0">
+                  <input
+                    type="text"
+                    className="flex-1 border border-border bg-background px-4 py-3 font-mono text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary transition-colors"
+                    placeholder="e.g. 0ec05559c0f30bc096618ef9..."
+                    value={nullifierInput}
+                    onChange={e => setNullifierInput(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && runNullifierCheck()}
+                    data-testid="input-nullifier"
+                  />
+                  <button
+                    className="border border-l-0 border-primary bg-primary text-primary-foreground px-6 py-3 font-mono text-xs hover:bg-primary/90 transition-colors disabled:opacity-50"
+                    onClick={runNullifierCheck}
+                    disabled={!nullifierInput.trim() || isLoading}
+                    data-testid="button-check-nullifier"
+                  >
+                    {isFetching ? "..." : "RUN"}
+                  </button>
+                </div>
+                {nullifierData && queryHash && (
+                  <div className="border border-border bg-card p-4" data-testid="playground-nullifier-result">
+                    <p className="font-mono text-xs text-muted-foreground mb-2">RESPONSE 200</p>
+                    <pre className="font-mono text-xs text-foreground/80 whitespace-pre-wrap leading-relaxed">
+{JSON.stringify({ hash: nullifierData.hash, used: nullifierData.used, ...(nullifierData.registeredAt ? { registeredAt: nullifierData.registeredAt } : {}) }, null, 2)}
+                    </pre>
+                    <div className={`mt-3 inline-flex items-center gap-2 font-mono text-xs ${nullifierData.used ? 'text-primary' : 'text-muted-foreground'}`}>
+                      <div className={`w-2 h-2 ${nullifierData.used ? 'bg-primary' : 'bg-border'}`} />
+                      {nullifierData.used ? "Nullifier registered" : "Nullifier not found"}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* POST /api/verify */}
+            {playgroundTab === "verify" && (
+              <div className="p-6 flex flex-col gap-4" data-testid="playground-verify">
+                <p className="font-mono text-xs text-muted-foreground">Submit a ZK proof and nullifier to verify humanhood. Returns a <code className="text-primary">humanBadge</code> token on success.</p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="flex flex-col gap-1">
+                    <label className="font-mono text-xs text-muted-foreground">proof</label>
+                    <input
+                      type="text"
+                      className="border border-border bg-background px-3 py-2 font-mono text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary transition-colors"
+                      placeholder="zk_abc123... (any non-empty string)"
+                      value={verifyProof}
+                      onChange={e => setVerifyProof(e.target.value)}
+                      data-testid="input-verify-proof"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="font-mono text-xs text-muted-foreground">nullifier</label>
+                    <input
+                      type="text"
+                      className="border border-border bg-background px-3 py-2 font-mono text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary transition-colors"
+                      placeholder="Paste nullifier from demo..."
+                      value={verifyNullifier}
+                      onChange={e => setVerifyNullifier(e.target.value)}
+                      data-testid="input-verify-nullifier"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="font-mono text-xs text-muted-foreground">appContext</label>
+                    <input
+                      type="text"
+                      className="border border-border bg-background px-3 py-2 font-mono text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary transition-colors"
+                      placeholder="e.g. proof-of-personhood-demo"
+                      value={verifyContext}
+                      onChange={e => setVerifyContext(e.target.value)}
+                      data-testid="input-verify-context"
+                    />
                   </div>
                 </div>
-              )}
-            </div>
+                <button
+                  className="self-start border border-primary bg-primary text-primary-foreground px-6 py-2 font-mono text-xs hover:bg-primary/90 transition-colors disabled:opacity-50"
+                  onClick={runVerify}
+                  disabled={!verifyProof.trim() || !verifyNullifier.trim() || !verifyContext.trim() || verifyMutation.isPending}
+                  data-testid="button-run-verify"
+                >
+                  {verifyMutation.isPending ? "Verifying..." : "POST /api/verify"}
+                </button>
+                {verifyResult !== null && (
+                  <div className={`border p-4 ${verifyResult.verified ? 'border-primary bg-primary/5' : 'border-border bg-card'}`} data-testid="playground-verify-result">
+                    <p className="font-mono text-xs text-muted-foreground mb-2">RESPONSE 200</p>
+                    <pre className="font-mono text-xs text-foreground/80 whitespace-pre-wrap leading-relaxed">
+{JSON.stringify(verifyResult, null, 2)}
+                    </pre>
+                    <div className={`mt-3 inline-flex items-center gap-2 font-mono text-xs ${verifyResult.verified ? 'text-primary' : 'text-destructive'}`}>
+                      <div className={`w-2 h-2 ${verifyResult.verified ? 'bg-primary' : 'bg-destructive'}`} />
+                      {verifyResult.verified ? "Verification successful — human badge issued" : "Verification failed"}
+                    </div>
+                  </div>
+                )}
+                {verifyMutation.isError && (
+                  <div className="border border-destructive bg-destructive/10 p-4 font-mono text-xs text-destructive" data-testid="playground-verify-error">
+                    {(verifyMutation.error as { message?: string })?.message ?? "Verification request failed"}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </section>
       </div>
