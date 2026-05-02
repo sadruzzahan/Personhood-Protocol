@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { useRegisterCommitment, useVerifyProof } from "@workspace/api-client-react";
+import { useRegisterCommitment, useVerifyProof, useHealthCheck, getHealthCheckQueryKey } from "@workspace/api-client-react";
 
 type Step = 0 | 1 | 2 | 3 | 4;
 
@@ -83,6 +83,8 @@ export function Demo() {
 
   const registerMutation = useRegisterCommitment();
   const verifyMutation = useVerifyProof();
+  const [livenessApiStatus, setLivenessApiStatus] = useState<"idle" | "checking" | "ok" | "error">("idle");
+  const { refetch: refetchHealth } = useHealthCheck({ query: { enabled: false, queryKey: getHealthCheckQueryKey() } });
 
   function reset() {
     setStep(0);
@@ -94,6 +96,7 @@ export function Demo() {
     setZkProof("");
     setBadgeResult(null);
     setError(null);
+    setLivenessApiStatus("idle");
     biometricData.current = randomHex(32);
     registerMutation.reset();
     verifyMutation.reset();
@@ -102,6 +105,10 @@ export function Demo() {
   function startLiveness() {
     setStep(1);
     setScanning(true);
+    setLivenessApiStatus("checking");
+    refetchHealth().then((res) => {
+      setLivenessApiStatus(res.error ? "error" : "ok");
+    }).catch(() => setLivenessApiStatus("error"));
     setTimeout(() => {
       setLivenessConfirmed(true);
       setScanning(false);

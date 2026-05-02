@@ -1,5 +1,6 @@
+import { type ReactElement } from "react";
 import { Switch, Route, Router as WouterRouter, useLocation } from "wouter";
-import { AnimatePresence, motion } from "framer-motion";
+import { type Variants, AnimatePresence, motion } from "framer-motion";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -13,37 +14,32 @@ import { Stats } from "@/pages/Stats";
 
 const queryClient = new QueryClient();
 
-const pageVariants = {
-  initial: { opacity: 0, y: 8 },
-  animate: { opacity: 1, y: 0, transition: { duration: 0.22, ease: "easeOut" } },
-  exit: { opacity: 0, y: -4, transition: { duration: 0.15, ease: "easeIn" } },
+const pageVariants: Variants = {
+  initial: { opacity: 0, y: 6 },
+  animate: { opacity: 1, y: 0, transition: { duration: 0.2, ease: [0.22, 1, 0.36, 1] } },
+  exit: { opacity: 0, transition: { duration: 0.12, ease: [0.4, 0, 1, 1] } },
 };
 
-function AnimatedRoute({ component: Component }: { component: () => JSX.Element }) {
-  return (
-    <motion.div
-      variants={pageVariants}
-      initial="initial"
-      animate="animate"
-      exit="exit"
-    >
-      <Component />
-    </motion.div>
-  );
-}
-
-function Router() {
+function Router(): ReactElement {
   const [location] = useLocation();
   return (
     <Layout>
       <AnimatePresence mode="wait" initial={false}>
-        <Switch key={location}>
-          <Route path="/" component={() => <AnimatedRoute component={Home} />} />
-          <Route path="/demo" component={() => <AnimatedRoute component={Demo} />} />
-          <Route path="/developers" component={() => <AnimatedRoute component={Developers} />} />
-          <Route path="/stats" component={() => <AnimatedRoute component={Stats} />} />
-          <Route component={() => <AnimatedRoute component={NotFound as () => JSX.Element} />} />
-        </Switch>
+        <motion.div
+          key={location}
+          variants={pageVariants}
+          initial="initial"
+          animate="animate"
+          exit="exit"
+        >
+          <Switch>
+            <Route path="/" component={Home} />
+            <Route path="/demo" component={Demo} />
+            <Route path="/developers" component={Developers} />
+            <Route path="/stats" component={Stats} />
+            <Route component={NotFound} />
+          </Switch>
+        </motion.div>
       </AnimatePresence>
     </Layout>
   );
