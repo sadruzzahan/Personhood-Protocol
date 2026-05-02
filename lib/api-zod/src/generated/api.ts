@@ -14,3 +14,101 @@ import * as zod from "zod";
 export const HealthCheckResponse = zod.object({
   status: zod.string(),
 });
+
+/**
+ * Accepts a simulated biometric payload, generates a cryptographic commitment hash and nullifier, stores them in-memory, and returns the commitment details.
+ * @summary Register a biometric commitment
+ */
+export const RegisterCommitmentBody = zod.object({
+  biometricData: zod
+    .string()
+    .describe(
+      "Base64-encoded simulated biometric payload (face geometry, fingerprint hash, etc.)",
+    ),
+  deviceTier: zod
+    .enum(["software", "secure_enclave", "specialized"])
+    .describe("Hardware tier used for biometric capture"),
+  appContext: zod
+    .string()
+    .describe("Application context identifier for scoped nullifier generation"),
+});
+
+export const RegisterCommitmentResponse = zod.object({
+  commitmentHash: zod
+    .string()
+    .describe(
+      "The cryptographic commitment C = Hash(biometric, salt) stored on-chain",
+    ),
+  nullifier: zod
+    .string()
+    .describe(
+      "The nullifier N = Hash(biometric, appContext) preventing duplicate registrations",
+    ),
+  registeredAt: zod.coerce.date(),
+  proofGenerationMs: zod
+    .number()
+    .describe("Simulated proof generation time in milliseconds"),
+});
+
+/**
+ * Accepts a simulated ZK proof and nullifier, verifies against the commitment registry, and returns a verified human badge if valid.
+ * @summary Verify a zero-knowledge proof
+ */
+export const VerifyProofBody = zod.object({
+  proof: zod.string().describe("Simulated ZK proof string"),
+  nullifier: zod.string().describe("The nullifier from the registration step"),
+  appContext: zod
+    .string()
+    .describe("Application context for which verification is requested"),
+});
+
+export const VerifyProofResponse = zod.object({
+  verified: zod
+    .boolean()
+    .describe("Whether the proof is valid and the person is confirmed human"),
+  humanBadge: zod
+    .string()
+    .optional()
+    .describe(
+      "Cryptographic badge token the application can store to mark this user as verified human",
+    ),
+  verifiedAt: zod.coerce.date(),
+  message: zod.string().describe("Human-readable verification result message"),
+});
+
+/**
+ * Returns aggregate statistics about the protocol including total registered commitments, total verifications, and server uptime.
+ * @summary Get global protocol statistics
+ */
+export const GetProtocolStatsResponse = zod.object({
+  totalCommitments: zod
+    .number()
+    .describe("Total number of registered commitments"),
+  totalVerifications: zod
+    .number()
+    .describe("Total number of successful verifications"),
+  totalFailedVerifications: zod
+    .number()
+    .describe("Total number of failed verification attempts"),
+  uptimeSeconds: zod.number().describe("Server uptime in seconds"),
+  activeNullifiers: zod
+    .number()
+    .describe("Number of unique nullifiers currently registered"),
+});
+
+/**
+ * Returns whether a given nullifier hash has already been consumed, enabling duplicate-registration detection.
+ * @summary Check if a nullifier has been used
+ */
+export const CheckNullifierParams = zod.object({
+  hash: zod.coerce.string().describe("The nullifier hash to check"),
+});
+
+export const CheckNullifierResponse = zod.object({
+  hash: zod.string().describe("The queried nullifier hash"),
+  used: zod.boolean().describe("Whether this nullifier has been consumed"),
+  registeredAt: zod.coerce
+    .date()
+    .optional()
+    .describe("When the nullifier was first registered (only present if used)"),
+});

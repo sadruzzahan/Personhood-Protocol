@@ -6,4 +6,12 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export * from "./errorResponse";
 export * from "./healthStatus";
+export * from "./nullifierStatus";
+export * from "./protocolStats";
+export * from "./registerRequest";
+export * from "./registerRequestDeviceTier";
+export * from "./registerResponse";
+export * from "./verifyRequest";
+export * from "./verifyResponse";

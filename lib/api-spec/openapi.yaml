@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: protocol
+    description: Proof of Personhood Protocol operations
 paths:
   /healthz:
     get:
@@ -24,6 +26,100 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /register:
+    post:
+      operationId: registerCommitment
+      tags: [protocol]
+      summary: Register a biometric commitment
+      description: Accepts a simulated biometric payload, generates a cryptographic commitment hash and nullifier, stores them in-memory, and returns the commitment details.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "200":
+          description: Commitment registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegisterResponse"
+        "409":
+          description: Nullifier already registered (duplicate human)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Invalid biometric payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /verify:
+    post:
+      operationId: verifyProof
+      tags: [protocol]
+      summary: Verify a zero-knowledge proof
+      description: Accepts a simulated ZK proof and nullifier, verifies against the commitment registry, and returns a verified human badge if valid.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyRequest"
+      responses:
+        "200":
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifyResponse"
+        "422":
+          description: Invalid proof payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /stats:
+    get:
+      operationId: getProtocolStats
+      tags: [protocol]
+      summary: Get global protocol statistics
+      description: Returns aggregate statistics about the protocol including total registered commitments, total verifications, and server uptime.
+      responses:
+        "200":
+          description: Protocol statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProtocolStats"
+
+  /nullifier/{hash}:
+    get:
+      operationId: checkNullifier
+      tags: [protocol]
+      summary: Check if a nullifier has been used
+      description: Returns whether a given nullifier hash has already been consumed, enabling duplicate-registration detection.
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          description: The nullifier hash to check
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Nullifier status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NullifierStatus"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +130,130 @@ components:
       required:
         - status
 
+    RegisterRequest:
+      type: object
+      properties:
+        biometricData:
+          type: string
+          description: Base64-encoded simulated biometric payload (face geometry, fingerprint hash, etc.)
+        deviceTier:
+          type: string
+          enum: [software, secure_enclave, specialized]
+          description: Hardware tier used for biometric capture
+        appContext:
+          type: string
+          description: Application context identifier for scoped nullifier generation
+      required:
+        - biometricData
+        - deviceTier
+        - appContext
+
+    RegisterResponse:
+      type: object
+      properties:
+        commitmentHash:
+          type: string
+          description: The cryptographic commitment C = Hash(biometric, salt) stored on-chain
+        nullifier:
+          type: string
+          description: The nullifier N = Hash(biometric, appContext) preventing duplicate registrations
+        registeredAt:
+          type: string
+          format: date-time
+        proofGenerationMs:
+          type: number
+          description: Simulated proof generation time in milliseconds
+      required:
+        - commitmentHash
+        - nullifier
+        - registeredAt
+        - proofGenerationMs
+
+    VerifyRequest:
+      type: object
+      properties:
+        proof:
+          type: string
+          description: Simulated ZK proof string
+        nullifier:
+          type: string
+          description: The nullifier from the registration step
+        appContext:
+          type: string
+          description: Application context for which verification is requested
+      required:
+        - proof
+        - nullifier
+        - appContext
+
+    VerifyResponse:
+      type: object
+      properties:
+        verified:
+          type: boolean
+          description: Whether the proof is valid and the person is confirmed human
+        humanBadge:
+          type: string
+          description: Cryptographic badge token the application can store to mark this user as verified human
+        verifiedAt:
+          type: string
+          format: date-time
+        message:
+          type: string
+          description: Human-readable verification result message
+      required:
+        - verified
+        - verifiedAt
+        - message
+
+    ProtocolStats:
+      type: object
+      properties:
+        totalCommitments:
+          type: integer
+          description: Total number of registered commitments
+        totalVerifications:
+          type: integer
+          description: Total number of successful verifications
+        totalFailedVerifications:
+          type: integer
+          description: Total number of failed verification attempts
+        uptimeSeconds:
+          type: number
+          description: Server uptime in seconds
+        activeNullifiers:
+          type: integer
+          description: Number of unique nullifiers currently registered
+      required:
+        - totalCommitments
+        - totalVerifications
+        - totalFailedVerifications
+        - uptimeSeconds
+        - activeNullifiers
+
+    NullifierStatus:
+      type: object
+      properties:
+        hash:
+          type: string
+          description: The queried nullifier hash
+        used:
+          type: boolean
+          description: Whether this nullifier has been consumed
+        registeredAt:
+          type: string
+          format: date-time
+          description: When the nullifier was first registered (only present if used)
+      required:
+        - hash
+        - used
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: string
+      required:
+        - error

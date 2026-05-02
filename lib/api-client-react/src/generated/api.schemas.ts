@@ -8,3 +8,80 @@
 export interface HealthStatus {
   status: string;
 }
+
+/**
+ * Hardware tier used for biometric capture
+ */
+export type RegisterRequestDeviceTier =
+  (typeof RegisterRequestDeviceTier)[keyof typeof RegisterRequestDeviceTier];
+
+export const RegisterRequestDeviceTier = {
+  software: "software",
+  secure_enclave: "secure_enclave",
+  specialized: "specialized",
+} as const;
+
+export interface RegisterRequest {
+  /** Base64-encoded simulated biometric payload (face geometry, fingerprint hash, etc.) */
+  biometricData: string;
+  /** Hardware tier used for biometric capture */
+  deviceTier: RegisterRequestDeviceTier;
+  /** Application context identifier for scoped nullifier generation */
+  appContext: string;
+}
+
+export interface RegisterResponse {
+  /** The cryptographic commitment C = Hash(biometric, salt) stored on-chain */
+  commitmentHash: string;
+  /** The nullifier N = Hash(biometric, appContext) preventing duplicate registrations */
+  nullifier: string;
+  registeredAt: string;
+  /** Simulated proof generation time in milliseconds */
+  proofGenerationMs: number;
+}
+
+export interface VerifyRequest {
+  /** Simulated ZK proof string */
+  proof: string;
+  /** The nullifier from the registration step */
+  nullifier: string;
+  /** Application context for which verification is requested */
+  appContext: string;
+}
+
+export interface VerifyResponse {
+  /** Whether the proof is valid and the person is confirmed human */
+  verified: boolean;
+  /** Cryptographic badge token the application can store to mark this user as verified human */
+  humanBadge?: string;
+  verifiedAt: string;
+  /** Human-readable verification result message */
+  message: string;
+}
+
+export interface ProtocolStats {
+  /** Total number of registered commitments */
+  totalCommitments: number;
+  /** Total number of successful verifications */
+  totalVerifications: number;
+  /** Total number of failed verification attempts */
+  totalFailedVerifications: number;
+  /** Server uptime in seconds */
+  uptimeSeconds: number;
+  /** Number of unique nullifiers currently registered */
+  activeNullifiers: number;
+}
+
+export interface NullifierStatus {
+  /** The queried nullifier hash */
+  hash: string;
+  /** Whether this nullifier has been consumed */
+  used: boolean;
+  /** When the nullifier was first registered (only present if used) */
+  registeredAt?: string;
+}
+
+export interface ErrorResponse {
+  error: string;
+  details?: string;
+}

@@ -5,18 +5,30 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import type {
+  MutationFunction,
   QueryFunction,
   QueryKey,
+  UseMutationOptions,
+  UseMutationResult,
   UseQueryOptions,
   UseQueryResult,
 } from "@tanstack/react-query";
 
-import type { HealthStatus } from "./api.schemas";
+import type {
+  ErrorResponse,
+  HealthStatus,
+  NullifierStatus,
+  ProtocolStats,
+  RegisterRequest,
+  RegisterResponse,
+  VerifyRequest,
+  VerifyResponse,
+} from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
-import type { ErrorType } from "../custom-fetch";
+import type { ErrorType, BodyType } from "../custom-fetch";
 
 type AwaitedInput<T> = PromiseLike<T> | T;
 
@@ -92,6 +104,344 @@ export function useHealthCheck<
   request?: SecondParameter<typeof customFetch>;
 }): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getHealthCheckQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Accepts a simulated biometric payload, generates a cryptographic commitment hash and nullifier, stores them in-memory, and returns the commitment details.
+ * @summary Register a biometric commitment
+ */
+export const getRegisterCommitmentUrl = () => {
+  return `/api/register`;
+};
+
+export const registerCommitment = async (
+  registerRequest: RegisterRequest,
+  options?: RequestInit,
+): Promise<RegisterResponse> => {
+  return customFetch<RegisterResponse>(getRegisterCommitmentUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(registerRequest),
+  });
+};
+
+export const getRegisterCommitmentMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof registerCommitment>>,
+    TError,
+    { data: BodyType<RegisterRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof registerCommitment>>,
+  TError,
+  { data: BodyType<RegisterRequest> },
+  TContext
+> => {
+  const mutationKey = ["registerCommitment"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof registerCommitment>>,
+    { data: BodyType<RegisterRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return registerCommitment(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RegisterCommitmentMutationResult = NonNullable<
+  Awaited<ReturnType<typeof registerCommitment>>
+>;
+export type RegisterCommitmentMutationBody = BodyType<RegisterRequest>;
+export type RegisterCommitmentMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Register a biometric commitment
+ */
+export const useRegisterCommitment = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof registerCommitment>>,
+    TError,
+    { data: BodyType<RegisterRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof registerCommitment>>,
+  TError,
+  { data: BodyType<RegisterRequest> },
+  TContext
+> => {
+  return useMutation(getRegisterCommitmentMutationOptions(options));
+};
+
+/**
+ * Accepts a simulated ZK proof and nullifier, verifies against the commitment registry, and returns a verified human badge if valid.
+ * @summary Verify a zero-knowledge proof
+ */
+export const getVerifyProofUrl = () => {
+  return `/api/verify`;
+};
+
+export const verifyProof = async (
+  verifyRequest: VerifyRequest,
+  options?: RequestInit,
+): Promise<VerifyResponse> => {
+  return customFetch<VerifyResponse>(getVerifyProofUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(verifyRequest),
+  });
+};
+
+export const getVerifyProofMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof verifyProof>>,
+    TError,
+    { data: BodyType<VerifyRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof verifyProof>>,
+  TError,
+  { data: BodyType<VerifyRequest> },
+  TContext
+> => {
+  const mutationKey = ["verifyProof"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof verifyProof>>,
+    { data: BodyType<VerifyRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return verifyProof(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type VerifyProofMutationResult = NonNullable<
+  Awaited<ReturnType<typeof verifyProof>>
+>;
+export type VerifyProofMutationBody = BodyType<VerifyRequest>;
+export type VerifyProofMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Verify a zero-knowledge proof
+ */
+export const useVerifyProof = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof verifyProof>>,
+    TError,
+    { data: BodyType<VerifyRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof verifyProof>>,
+  TError,
+  { data: BodyType<VerifyRequest> },
+  TContext
+> => {
+  return useMutation(getVerifyProofMutationOptions(options));
+};
+
+/**
+ * Returns aggregate statistics about the protocol including total registered commitments, total verifications, and server uptime.
+ * @summary Get global protocol statistics
+ */
+export const getGetProtocolStatsUrl = () => {
+  return `/api/stats`;
+};
+
+export const getProtocolStats = async (
+  options?: RequestInit,
+): Promise<ProtocolStats> => {
+  return customFetch<ProtocolStats>(getGetProtocolStatsUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetProtocolStatsQueryKey = () => {
+  return [`/api/stats`] as const;
+};
+
+export const getGetProtocolStatsQueryOptions = <
+  TData = Awaited<ReturnType<typeof getProtocolStats>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getProtocolStats>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetProtocolStatsQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getProtocolStats>>
+  > = ({ signal }) => getProtocolStats({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getProtocolStats>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetProtocolStatsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getProtocolStats>>
+>;
+export type GetProtocolStatsQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Get global protocol statistics
+ */
+
+export function useGetProtocolStats<
+  TData = Awaited<ReturnType<typeof getProtocolStats>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getProtocolStats>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetProtocolStatsQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Returns whether a given nullifier hash has already been consumed, enabling duplicate-registration detection.
+ * @summary Check if a nullifier has been used
+ */
+export const getCheckNullifierUrl = (hash: string) => {
+  return `/api/nullifier/${hash}`;
+};
+
+export const checkNullifier = async (
+  hash: string,
+  options?: RequestInit,
+): Promise<NullifierStatus> => {
+  return customFetch<NullifierStatus>(getCheckNullifierUrl(hash), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getCheckNullifierQueryKey = (hash: string) => {
+  return [`/api/nullifier/${hash}`] as const;
+};
+
+export const getCheckNullifierQueryOptions = <
+  TData = Awaited<ReturnType<typeof checkNullifier>>,
+  TError = ErrorType<unknown>,
+>(
+  hash: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof checkNullifier>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getCheckNullifierQueryKey(hash);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof checkNullifier>>> = ({
+    signal,
+  }) => checkNullifier(hash, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!hash,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof checkNullifier>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type CheckNullifierQueryResult = NonNullable<
+  Awaited<ReturnType<typeof checkNullifier>>
+>;
+export type CheckNullifierQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Check if a nullifier has been used
+ */
+
+export function useCheckNullifier<
+  TData = Awaited<ReturnType<typeof checkNullifier>>,
+  TError = ErrorType<unknown>,
+>(
+  hash: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof checkNullifier>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getCheckNullifierQueryOptions(hash, options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;
