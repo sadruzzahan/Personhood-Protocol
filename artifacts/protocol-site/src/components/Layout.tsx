@@ -90,13 +90,21 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </main>
 
       <footer className="border-t border-border/40 bg-card py-8 mt-auto">
-        <div className="container mx-auto px-4 max-w-6xl flex flex-col md:flex-row items-center justify-between gap-4">
+        <div className="container mx-auto px-4 max-w-6xl flex flex-col md:flex-row items-center justify-between gap-6">
           <div className="flex items-center gap-2">
             <div className="w-3 h-3 bg-primary rounded-none" />
             <span className="text-sm font-medium">Proof of Personhood Foundation</span>
           </div>
-          <div className="text-xs text-muted-foreground">
+          <div className="text-xs text-muted-foreground hidden md:block">
             Cryptographic identity for the post-AI internet.
+          </div>
+          <div className="flex items-center gap-3">
+            <Link href="/demo" className="text-xs font-medium border border-primary text-primary px-4 py-1.5 hover:bg-primary hover:text-primary-foreground transition-colors" data-testid="footer-cta-demo">
+              Try the Demo
+            </Link>
+            <Link href="/developers" className="text-xs text-muted-foreground hover:text-foreground transition-colors" data-testid="footer-cta-docs">
+              Developer Docs
+            </Link>
           </div>
         </div>
       </footer>
