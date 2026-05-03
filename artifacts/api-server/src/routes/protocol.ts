@@ -18,9 +18,23 @@ import { rateLimit } from "../middlewares/rateLimit";
 import { idempotencyMiddleware } from "../middlewares/idempotency";
 import { requestLoggerMiddleware } from "../middlewares/requestLogger";
 import { deriveNullifier, deriveCommitment } from "../lib/nullifier";
-// Note: deriveNullifier is intentionally only used at /register time; /verify
-// trusts the server-side commitment registry rather than recomputing from
-// any client-supplied subject so the badge stays free of stable identifiers.
+// DESIGN NOTE — /verify trust model.
+// The badge JWT deliberately does NOT carry the vendor subject identifier
+// (embedding it would create a stable cross-app linker that defeats the
+// privacy goal of this protocol). Therefore /verify cannot recompute the
+// expected nullifier from "subject + appContext"; it instead validates
+// the badge by:
+//   1) checking the RS256 signature against the JWKS,
+//   2) confirming aud/iss/exp,
+//   3) looking up the commitment by JWT.sub (commitment hash) in the
+//      server-side registry, and
+//   4) confirming the badge's nullifier and app_context match what was
+//      recorded at /register time.
+// Any tampered claim (different nullifier or app_context for the same
+// commitment) fails step 4 even if the signature could somehow be
+// re-signed. This is a deliberate protocol choice over the
+// "recompute from subject" model — see replit.md "Verification flow &
+// key boundary" for the full rationale.
 import { signHumanBadge, verifyHumanBadge } from "../lib/jwt";
 import { getVendorByName } from "../lib/vendor";
 

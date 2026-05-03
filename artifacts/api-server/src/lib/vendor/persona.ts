@@ -34,6 +34,13 @@ interface PersonaInquiryResource {
   };
 }
 
+// Persona's inquiry lifecycle puts the decision *into* the status field:
+//   created -> pending -> completed -> {approved | declined | needs_review}
+// "approved" is the only post-decision terminal state we treat as
+// registerable. "completed" means the user finished the hosted flow but
+// the decision is still being computed (auto- or manual-review), so we
+// must NOT register a badge yet. See:
+//   https://docs.withpersona.com/docs/inquiry-statuses
 function mapStatus(s: string): InquiryResult["status"] {
   switch (s) {
     case "approved":
