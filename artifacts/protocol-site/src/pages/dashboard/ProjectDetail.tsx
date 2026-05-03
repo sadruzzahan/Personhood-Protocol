@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useRoute, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { dashboardApi } from "@/lib/dashboardApi";
@@ -443,14 +443,15 @@ function SettingsTab({ projectId, onDeleted }: { projectId: string; onDeleted: (
   const [webhookUrl, setWebhookUrl] = useState("");
   const [initialized, setInitialized] = useState(false);
 
-  if (projectQuery.data && !initialized) {
+  useEffect(() => {
+    if (initialized || !projectQuery.data) return;
     const p = projectQuery.data.project;
     setName(p.name);
     setEnv(p.environment);
     setAllowedOrigins(p.allowedOrigins ?? "");
     setWebhookUrl(p.webhookUrl ?? "");
     setInitialized(true);
-  }
+  }, [projectQuery.data, initialized]);
 
   const updateMutation = useMutation({
     mutationFn: (body: {
