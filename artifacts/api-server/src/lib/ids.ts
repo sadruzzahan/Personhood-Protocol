@@ -65,9 +65,15 @@ export interface NewApiKey {
  * the last4 chars, and the HMAC-SHA256 hash for storage.
  */
 export function generateApiKey(env: "test" | "live" = "test"): NewApiKey {
-  const prefix = `pk_${env}_`;
-  const random = base32(randomBytes(20));
-  const fullKey = `${prefix}${random}`;
+  // 32 bytes of CSPRNG entropy → ~52 base32 chars of secret material.
+  const envPrefix = `pk_${env}_`;
+  const random = base32(randomBytes(32));
+  const fullKey = `${envPrefix}${random}`;
+  // Public, key-identifying prefix: env tag + first 8 chars of the secret.
+  // Stored/displayed alongside last4 so support can disambiguate keys
+  // without ever seeing the full secret. The remaining ~44 chars (~220
+  // bits) of entropy are the unguessable secret portion.
+  const prefix = `${envPrefix}${random.slice(0, 8)}`;
   const last4 = fullKey.slice(-4);
   const keyHash = createHmac("sha256", API_KEY_SECRET)
     .update(fullKey)
