@@ -1,4 +1,11 @@
-import { pgTable, text, timestamp, integer, index } from "drizzle-orm/pg-core";
+import {
+  pgTable,
+  text,
+  timestamp,
+  integer,
+  index,
+  primaryKey,
+} from "drizzle-orm/pg-core";
 
 // Token-bucket state per (project_id, bucket_key). bucket_key is the endpoint
 // family ("write" / "read") so we can apply different limits without an
@@ -19,7 +26,10 @@ export const rateLimitBucketsTable = pgTable(
       .defaultNow(),
   },
   (t) => ({
-    pk: index("rate_limit_buckets_pk_idx").on(t.projectId, t.bucketKey),
+    pk: primaryKey({
+      name: "rate_limit_buckets_pkey",
+      columns: [t.projectId, t.bucketKey],
+    }),
   }),
 );
 
@@ -41,7 +51,10 @@ export const idempotencyRecordsTable = pgTable(
       .defaultNow(),
   },
   (t) => ({
-    pk: index("idempotency_records_pk_idx").on(t.projectId, t.key),
+    pk: primaryKey({
+      name: "idempotency_records_pkey",
+      columns: [t.projectId, t.key],
+    }),
     byCreatedAt: index("idempotency_records_created_idx").on(t.createdAt),
   }),
 );

@@ -31,6 +31,7 @@ export const ErrorEnvelopeErrorCode = {
   forbidden_origin: "forbidden_origin",
   rate_limited: "rate_limited",
   idempotency_conflict: "idempotency_conflict",
+  idempotency_in_progress: "idempotency_in_progress",
   payload_too_large: "payload_too_large",
   request_timeout: "request_timeout",
   validation_error: "validation_error",

@@ -21,6 +21,33 @@ export interface HealthStatus {
   status: string;
 }
 
+export type ReadinessStatusStatus =
+  (typeof ReadinessStatusStatus)[keyof typeof ReadinessStatusStatus];
+
+export const ReadinessStatusStatus = {
+  ready: "ready",
+  not_ready: "not_ready",
+} as const;
+
+/**
+ * Per-dependency readiness signal. `db` is the Postgres ping;
+`schema` confirms the expected tables exist (the project does
+not use a separate migration runner — schema is bootstrapped on
+startup, and this check verifies that bootstrap completed).
+
+ */
+export type ReadinessStatusChecks = { [key: string]: unknown };
+
+export interface ReadinessStatus {
+  status: ReadinessStatusStatus;
+  /** Per-dependency readiness signal. `db` is the Postgres ping;
+`schema` confirms the expected tables exist (the project does
+not use a separate migration runner — schema is bootstrapped on
+startup, and this check verifies that bootstrap completed).
+ */
+  checks?: ReadinessStatusChecks;
+}
+
 /**
  * Hardware tier used for biometric capture
  */
@@ -89,6 +116,7 @@ export const ErrorEnvelopeErrorCode = {
   forbidden_origin: "forbidden_origin",
   rate_limited: "rate_limited",
   idempotency_conflict: "idempotency_conflict",
+  idempotency_in_progress: "idempotency_in_progress",
   payload_too_large: "payload_too_large",
   request_timeout: "request_timeout",
   validation_error: "validation_error",

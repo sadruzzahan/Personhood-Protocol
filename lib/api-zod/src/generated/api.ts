@@ -28,6 +28,25 @@ export const HealthCheckResponse = zod.object({
 });
 
 /**
+ * Returns 200 with `status: "ready"` once the server can reach Postgres
+and the expected schema (core protocol tables + hardening tables) is
+present. Returns 503 with `status: "not_ready"` otherwise. Suitable
+for orchestrator readiness gates.
+
+ * @summary Readiness probe
+ */
+export const ReadinessCheckResponse = zod.object({
+  status: zod.enum(["ready", "not_ready"]),
+  checks: zod
+    .object({})
+    .passthrough()
+    .optional()
+    .describe(
+      "Per-dependency readiness signal. `db` is the Postgres ping;\n`schema` confirms the expected tables exist (the project does\nnot use a separate migration runner — schema is bootstrapped on\nstartup, and this check verifies that bootstrap completed).\n",
+    ),
+});
+
+/**
  * Accepts a simulated biometric payload, generates a cryptographic commitment hash and nullifier, stores them, and returns the commitment details.
  * @summary Register a biometric commitment
  */
