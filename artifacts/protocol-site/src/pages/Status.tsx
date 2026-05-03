@@ -83,8 +83,9 @@ export function Status() {
         <div className="border border-border bg-card p-6" data-testid="status-roadmap">
           <p className="text-xs font-mono text-primary tracking-widest uppercase mb-2">Coming soon</p>
           <p className="text-sm text-muted-foreground leading-relaxed">
-            A dedicated public status page (Statuspage / Better Stack) with incident history, scheduled
-            maintenance windows, subscriber notifications, and component-level uptime percentages.
+            Powered by <span className="text-foreground">Statuspage / Better Stack</span> — full status
+            page coming soon. It will include incident history, scheduled maintenance windows,
+            subscriber notifications, and component-level uptime percentages.
           </p>
         </div>
       </div>
