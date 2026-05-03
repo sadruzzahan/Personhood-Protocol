@@ -53,6 +53,13 @@ export const projectsTable = pgTable(
     // Optional webhook URL the project owner wants verification events
     // delivered to. Wired in Task #10.
     webhookUrl: text("webhook_url"),
+    // Per-project HMAC-SHA256 signing secret for outbound webhook
+    // deliveries. Sent in the `Pop-Signature: t=<unix>,v1=<hex_hmac>`
+    // header so customers can verify authenticity of incoming events.
+    // Generated lazily the first time the customer enables webhooks;
+    // rotatable via the dashboard. Stored in plaintext (Stripe-style)
+    // because the server needs the raw value to sign each delivery.
+    webhookSigningSecret: text("webhook_signing_secret"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

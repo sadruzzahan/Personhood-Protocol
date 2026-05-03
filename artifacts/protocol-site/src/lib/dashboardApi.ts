@@ -150,4 +150,45 @@ export const dashboardApi = {
     ),
   getUsage: (projectId: string) =>
     request<UsageResponse>(`/projects/${projectId}/usage`),
+  getWebhook: (projectId: string) =>
+    request<{
+      webhookUrl: string | null;
+      signingSecret: string | null;
+      eventTypes: string[];
+    }>(`/projects/${projectId}/webhook`),
+  rotateWebhookSecret: (projectId: string) =>
+    request<{ signingSecret: string; notice: string }>(
+      `/projects/${projectId}/webhook/secret/rotate`,
+      { method: "POST" },
+    ),
+  listWebhookDeliveries: (projectId: string, limit = 50) =>
+    request<{ deliveries: WebhookDeliveryInfo[] }>(
+      `/projects/${projectId}/webhook/deliveries?limit=${limit}`,
+    ),
+  redeliverWebhook: (projectId: string, deliveryId: string) =>
+    request<{ delivery: { id: string } }>(
+      `/projects/${projectId}/webhook/deliveries/${deliveryId}/redeliver`,
+      { method: "POST" },
+    ),
+  sendWebhookTest: (projectId: string) =>
+    request<{ delivery: { id: string } | null }>(
+      `/projects/${projectId}/webhook/test`,
+      { method: "POST" },
+    ),
 };
+
+export interface WebhookDeliveryInfo {
+  id: string;
+  eventId: string;
+  eventType: string;
+  status: "pending" | "delivered" | "failed" | "abandoned";
+  attemptCount: number;
+  nextAttemptAt: string | null;
+  lastAttemptedAt: string | null;
+  lastResponseStatus: number | null;
+  lastResponseTimeMs: number | null;
+  lastResponseBodyPreview: string | null;
+  lastError: string | null;
+  targetUrl: string;
+  createdAt: string;
+}

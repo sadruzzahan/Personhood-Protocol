@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { dashboardApi } from "@/lib/dashboardApi";
 import { DashboardLayout } from "./DashboardLayout";
 
-type Tab = "overview" | "keys" | "events" | "settings";
+type Tab = "overview" | "keys" | "events" | "webhooks" | "settings";
 
 export function ProjectDetailPage() {
   return (
@@ -61,7 +61,7 @@ function ProjectDetailContent() {
       </div>
 
       <div className="border-b border-border flex gap-6 mb-8">
-        {(["overview", "keys", "events", "settings"] as Tab[]).map((t) => (
+        {(["overview", "keys", "events", "webhooks", "settings"] as Tab[]).map((t) => (
           <button
             key={t}
             type="button"
@@ -81,6 +81,7 @@ function ProjectDetailContent() {
       {tab === "overview" && <OverviewTab projectId={projectId} data={data} />}
       {tab === "keys" && <KeysTab projectId={projectId} />}
       {tab === "events" && <EventsTab projectId={projectId} />}
+      {tab === "webhooks" && <WebhooksTab projectId={projectId} project={project} />}
       {tab === "settings" && (
         <SettingsTab projectId={projectId} onDeleted={() => setLocation("/dashboard")} />
       )}
@@ -568,6 +569,7 @@ function SettingsTab({ projectId, onDeleted }: { projectId: string; onDeleted: (
         </div>
       </form>
 
+      <WebhookDangerZoneSpacer />
       <div className="border border-destructive/40 bg-destructive/5 p-6" data-testid="danger-zone">
         <h3 className="text-sm font-medium text-destructive mb-2">Danger zone</h3>
         <p className="text-xs font-mono text-muted-foreground mb-4">
@@ -585,6 +587,232 @@ function SettingsTab({ projectId, onDeleted }: { projectId: string; onDeleted: (
         >
           Delete project
         </button>
+      </div>
+    </div>
+  );
+}
+
+
+function WebhookDangerZoneSpacer() {
+  return null;
+}
+
+function WebhooksTab({
+  projectId,
+  project,
+}: {
+  projectId: string;
+  project: { webhookUrl: string | null };
+}) {
+  const queryClient = useQueryClient();
+  const webhookQuery = useQuery({
+    queryKey: ["dashboard", "webhook", projectId],
+    queryFn: () => dashboardApi.getWebhook(projectId),
+  });
+  const deliveriesQuery = useQuery({
+    queryKey: ["dashboard", "webhook-deliveries", projectId],
+    queryFn: () => dashboardApi.listWebhookDeliveries(projectId, 50),
+    refetchInterval: 5000,
+  });
+  const [revealedSecret, setRevealedSecret] = useState<string | null>(null);
+
+  const rotateMutation = useMutation({
+    mutationFn: () => dashboardApi.rotateWebhookSecret(projectId),
+    onSuccess: (res) => {
+      setRevealedSecret(res.signingSecret);
+      queryClient.invalidateQueries({ queryKey: ["dashboard", "webhook", projectId] });
+    },
+  });
+  const testMutation = useMutation({
+    mutationFn: () => dashboardApi.sendWebhookTest(projectId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["dashboard", "webhook-deliveries", projectId] });
+    },
+  });
+  const redeliverMutation = useMutation({
+    mutationFn: (deliveryId: string) =>
+      dashboardApi.redeliverWebhook(projectId, deliveryId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["dashboard", "webhook-deliveries", projectId] });
+    },
+  });
+
+  if (webhookQuery.isLoading) {
+    return (
+      <p className="text-sm font-mono text-muted-foreground" data-testid="text-loading-webhook">
+        Loading webhook config…
+      </p>
+    );
+  }
+  const cfg = webhookQuery.data;
+  const deliveries = deliveriesQuery.data?.deliveries ?? [];
+
+  return (
+    <div data-testid="webhooks-tab" className="grid gap-6">
+      {!project.webhookUrl && (
+        <div className="border border-dashed border-border p-6 text-sm font-mono text-muted-foreground" data-testid="banner-webhook-url-missing">
+          No webhook URL set. Add one in <strong>Settings</strong> to start receiving
+          <code className="mx-1 px-1 bg-muted">verification.completed</code> events.
+        </div>
+      )}
+
+      <div className="border border-border bg-card p-6">
+        <h3 className="text-xs font-mono uppercase tracking-widest text-muted-foreground mb-3">
+          Endpoint
+        </h3>
+        <p className="text-sm font-mono break-all mb-4" data-testid="text-webhook-url">
+          {cfg?.webhookUrl ?? <span className="text-muted-foreground">— not configured —</span>}
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={!project.webhookUrl || testMutation.isPending}
+            onClick={() => testMutation.mutate()}
+            className="text-xs font-mono uppercase tracking-widest border border-primary text-primary px-3 py-2 hover:bg-primary hover:text-primary-foreground transition-colors disabled:opacity-50"
+            data-testid="button-send-webhook-test"
+          >
+            {testMutation.isPending ? "Sending…" : "Send test event"}
+          </button>
+          {testMutation.isSuccess && (
+            <span className="text-xs font-mono text-primary self-center" data-testid="text-test-sent">
+              Test queued.
+            </span>
+          )}
+          {testMutation.isError && (
+            <span className="text-xs font-mono text-destructive self-center" data-testid="text-test-error">
+              {(testMutation.error as Error).message}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="border border-border bg-card p-6">
+        <h3 className="text-xs font-mono uppercase tracking-widest text-muted-foreground mb-3">
+          Signing secret
+        </h3>
+        {revealedSecret ? (
+          <div className="border border-primary bg-primary/10 p-3 mb-3" data-testid="banner-revealed-secret">
+            <p className="text-[10px] font-mono uppercase tracking-widest text-primary mb-2">
+              Save this secret — copy it now.
+            </p>
+            <div className="flex gap-2">
+              <code className="flex-1 bg-background border border-border px-3 py-2 text-xs font-mono break-all" data-testid="text-revealed-secret">
+                {revealedSecret}
+              </code>
+              <button
+                type="button"
+                onClick={() => navigator.clipboard.writeText(revealedSecret)}
+                className="text-xs font-mono uppercase tracking-widest border border-primary text-primary px-3 hover:bg-primary hover:text-primary-foreground"
+                data-testid="button-copy-secret"
+              >
+                Copy
+              </button>
+              <button
+                type="button"
+                onClick={() => setRevealedSecret(null)}
+                className="text-xs font-mono text-muted-foreground hover:text-foreground px-2"
+                data-testid="button-dismiss-secret"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        ) : cfg?.signingSecret ? (
+          <p className="text-sm font-mono text-muted-foreground mb-3" data-testid="text-current-secret">
+            <code>{cfg.signingSecret.slice(0, 12)}…{cfg.signingSecret.slice(-4)}</code>
+          </p>
+        ) : (
+          <p className="text-xs font-mono text-muted-foreground mb-3" data-testid="text-no-secret">
+            No secret yet — one will be generated automatically the first time an event
+            is delivered, or when you click rotate.
+          </p>
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            if (confirm("Rotate the signing secret? In-flight retries will continue with the old secret; new events will be signed with the new one.")) {
+              rotateMutation.mutate();
+            }
+          }}
+          disabled={rotateMutation.isPending}
+          className="text-xs font-mono uppercase tracking-widest border border-border px-3 py-2 hover:bg-muted transition-colors disabled:opacity-50"
+          data-testid="button-rotate-secret"
+        >
+          {rotateMutation.isPending ? "Rotating…" : cfg?.signingSecret ? "Rotate secret" : "Generate secret"}
+        </button>
+        <p className="text-[10px] font-mono text-muted-foreground mt-3 leading-relaxed">
+          Verify with HMAC-SHA256 over <code>{`${"`${t}.${rawBody}`"}`}</code>. The header is
+          <code className="mx-1">Pop-Signature: t=&lt;unix&gt;,v1=&lt;hex&gt;</code>. Reject
+          timestamps older than 5 minutes. See <Link href="/developers#webhooks" className="text-primary hover:underline">Developers → Webhooks</Link>.
+        </p>
+      </div>
+
+      <div>
+        <h3 className="text-xs font-mono uppercase tracking-widest text-muted-foreground mb-3">
+          Recent deliveries
+        </h3>
+        {deliveriesQuery.isLoading ? (
+          <p className="text-sm font-mono text-muted-foreground" data-testid="text-loading-deliveries">
+            Loading deliveries…
+          </p>
+        ) : deliveries.length === 0 ? (
+          <div className="border border-dashed border-border p-12 text-center" data-testid="empty-deliveries">
+            <p className="text-muted-foreground font-mono text-sm">
+              No deliveries yet. Successful <code>/api/verify</code> calls and the
+              "Send test event" button above produce rows here.
+            </p>
+          </div>
+        ) : (
+          <table className="w-full text-sm font-mono border border-border" data-testid="table-deliveries">
+            <thead className="bg-card">
+              <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
+                <th className="px-3 py-2">Time</th>
+                <th className="px-3 py-2">Event</th>
+                <th className="px-3 py-2">Status</th>
+                <th className="px-3 py-2">Attempts</th>
+                <th className="px-3 py-2">HTTP</th>
+                <th className="px-3 py-2">Latency</th>
+                <th className="px-3 py-2">Error</th>
+                <th className="px-3 py-2 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {deliveries.map((d) => (
+                <tr key={d.id} className="border-t border-border align-top" data-testid={`row-delivery-${d.id}`}>
+                  <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">
+                    {new Date(d.createdAt).toLocaleString()}
+                  </td>
+                  <td className="px-3 py-2">
+                    <div>{d.eventType}</div>
+                    <div className="text-[10px] text-muted-foreground">{d.eventId}</div>
+                  </td>
+                  <td className={`px-3 py-2 ${
+                    d.status === "delivered" ? "text-primary" :
+                    d.status === "abandoned" ? "text-destructive" :
+                    "text-muted-foreground"
+                  }`}>
+                    {d.status}
+                  </td>
+                  <td className="px-3 py-2 text-muted-foreground">{d.attemptCount}</td>
+                  <td className="px-3 py-2 text-muted-foreground">{d.lastResponseStatus ?? "—"}</td>
+                  <td className="px-3 py-2 text-muted-foreground">{d.lastResponseTimeMs != null ? `${d.lastResponseTimeMs}ms` : "—"}</td>
+                  <td className="px-3 py-2 text-destructive text-xs">{d.lastError ?? ""}</td>
+                  <td className="px-3 py-2 text-right">
+                    <button
+                      type="button"
+                      onClick={() => redeliverMutation.mutate(d.id)}
+                      disabled={redeliverMutation.isPending}
+                      className="text-xs text-primary hover:underline disabled:opacity-50"
+                      data-testid={`button-redeliver-${d.id}`}
+                    >
+                      Redeliver
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );

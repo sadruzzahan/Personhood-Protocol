@@ -37,6 +37,8 @@ import { deriveNullifier, deriveCommitment } from "../lib/nullifier";
 // key boundary" for the full rationale.
 import { signHumanBadge, verifyHumanBadge } from "../lib/jwt";
 import { getVendorByName } from "../lib/vendor";
+import { enqueueWebhook } from "../lib/webhookDelivery";
+import { logger } from "../lib/logger";
 
 const STATS_ROW_ID = 1;
 const serverStartedAt = Date.now();
@@ -336,6 +338,23 @@ router.post("/verify", ...publicWrite, async (req, res, next) => {
     }
 
     await incrementStats("success");
+    // Fire-and-forget outbound webhook to the project's configured URL.
+    // Failures are recorded in webhook_deliveries and retried by the
+    // poller — they MUST NOT fail the /verify response.
+    enqueueWebhook({
+      projectId: req.apiContext.project.id,
+      eventType: "verification.completed",
+      data: {
+        nullifier: claims.nullifier,
+        commitmentHash: claims.sub,
+        appContext,
+        verifiedAt: now.toISOString(),
+        // Echo the badge expiry so customers can decide whether to renew.
+        badgeExpiresAt: new Date((claims.exp ?? 0) * 1000).toISOString(),
+      },
+    }).catch((err) => {
+      logger.warn({ err, projectId: req.apiContext?.project.id }, "Failed to enqueue webhook");
+    });
     res.json({
       verified: true,
       nullifier: claims.nullifier,

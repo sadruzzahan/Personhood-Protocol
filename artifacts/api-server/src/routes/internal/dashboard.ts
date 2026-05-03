@@ -8,6 +8,7 @@ import {
   projectsTable,
   apiKeysTable,
   requestLogsTable,
+  webhookDeliveriesTable,
 } from "@workspace/db";
 import { requireAuth, getUserId } from "../../lib/auth";
 import {
@@ -16,6 +17,11 @@ import {
   shortHash,
   slugify,
 } from "../../lib/ids";
+import {
+  enqueueWebhook,
+  ensureWebhookSigningSecret,
+  rotateWebhookSigningSecret,
+} from "../../lib/webhookDelivery";
 
 const router: IRouter = Router();
 
@@ -559,6 +565,150 @@ router.get("/projects/:id/usage", async (req, res) => {
     },
     last7Days,
   });
+});
+
+// ---------------------------------------------------------------------------
+// Webhooks
+// ---------------------------------------------------------------------------
+
+router.get("/projects/:id/webhook", async (req, res) => {
+  const userId = getUserId(req);
+  const project = await assertProjectAccess(userId, req.params.id);
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+  res.json({
+    webhookUrl: project.webhookUrl,
+    // Reveal the signing secret to org members. The dashboard caller must
+    // already be authenticated against the org via Clerk; webhook secrets
+    // are not API keys and are safe to display in the dashboard UI.
+    signingSecret: project.webhookSigningSecret,
+    eventTypes: ["verification.completed"],
+  });
+});
+
+router.post("/projects/:id/webhook/secret/rotate", async (req, res) => {
+  const userId = getUserId(req);
+  const project = await assertProjectAccess(userId, req.params.id);
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+  const newSecret = await rotateWebhookSigningSecret(project.id);
+  res.status(201).json({
+    signingSecret: newSecret,
+    notice:
+      "The previous signing secret is rotated. In-flight retries that snapshotted the old secret continue to sign with it; future deliveries will use the new secret.",
+  });
+});
+
+router.get("/projects/:id/webhook/deliveries", async (req, res) => {
+  const userId = getUserId(req);
+  const project = await assertProjectAccess(userId, req.params.id);
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+  const rawLimit = Number(req.query.limit ?? 50);
+  const limit =
+    Number.isFinite(rawLimit) && rawLimit > 0
+      ? Math.min(Math.floor(rawLimit), 100)
+      : 50;
+  const rows = await db
+    .select({
+      id: webhookDeliveriesTable.id,
+      eventId: webhookDeliveriesTable.eventId,
+      eventType: webhookDeliveriesTable.eventType,
+      status: webhookDeliveriesTable.status,
+      attemptCount: webhookDeliveriesTable.attemptCount,
+      nextAttemptAt: webhookDeliveriesTable.nextAttemptAt,
+      lastAttemptedAt: webhookDeliveriesTable.lastAttemptedAt,
+      lastResponseStatus: webhookDeliveriesTable.lastResponseStatus,
+      lastResponseTimeMs: webhookDeliveriesTable.lastResponseTimeMs,
+      lastResponseBodyPreview: webhookDeliveriesTable.lastResponseBodyPreview,
+      lastError: webhookDeliveriesTable.lastError,
+      targetUrl: webhookDeliveriesTable.targetUrl,
+      createdAt: webhookDeliveriesTable.createdAt,
+    })
+    .from(webhookDeliveriesTable)
+    .where(eq(webhookDeliveriesTable.projectId, project.id))
+    .orderBy(desc(webhookDeliveriesTable.createdAt))
+    .limit(limit);
+  res.json({ deliveries: rows });
+});
+
+router.post("/projects/:id/webhook/deliveries/:deliveryId/redeliver", async (req, res) => {
+  const userId = getUserId(req);
+  const project = await assertProjectAccess(userId, req.params.id);
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+  const [original] = await db
+    .select()
+    .from(webhookDeliveriesTable)
+    .where(
+      and(
+        eq(webhookDeliveriesTable.id, req.params.deliveryId),
+        eq(webhookDeliveriesTable.projectId, project.id),
+      ),
+    )
+    .limit(1);
+  if (!original) {
+    res.status(404).json({ error: "Delivery not found" });
+    return;
+  }
+  // Redelivery is a fresh delivery: new event id (so dedup index doesn't
+  // block it), fresh secret snapshot from the current project secret, fresh
+  // target URL. The payload `data` is preserved; envelope id/created are
+  // regenerated so customers can distinguish original from redelivery.
+  const payload = original.payload as { type?: string; data?: Record<string, unknown> };
+  const eventType = (payload.type ?? original.eventType) as
+    | "verification.completed"
+    | "webhook.test";
+  const data = payload.data ?? {};
+  const result = await enqueueWebhook({
+    projectId: project.id,
+    eventType,
+    data: { ...data, redeliveredFrom: original.eventId },
+  });
+  if (!result) {
+    res.status(409).json({
+      error:
+        "Cannot redeliver — the project no longer has a webhook URL configured. Set one in Settings, then try again.",
+    });
+    return;
+  }
+  res.status(202).json({ delivery: { id: result.id } });
+});
+
+router.post("/projects/:id/webhook/test", async (req, res) => {
+  const userId = getUserId(req);
+  const project = await assertProjectAccess(userId, req.params.id);
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+  if (!project.webhookUrl) {
+    res.status(409).json({
+      error:
+        "No webhook URL configured. Save a URL in Settings before sending a test event.",
+    });
+    return;
+  }
+  // Materialize the secret on test so the customer can copy it before the
+  // first real event fires.
+  await ensureWebhookSigningSecret(project.id);
+  const result = await enqueueWebhook({
+    projectId: project.id,
+    eventType: "webhook.test",
+    data: {
+      note: "This is a test event sent from the dashboard.",
+      sentAt: new Date().toISOString(),
+    },
+  });
+  res.status(202).json({ delivery: result });
 });
 
 export default router;

@@ -3,6 +3,7 @@ import { logger } from "./lib/logger";
 import { ensureDemoApiKey } from "./lib/demoBootstrap";
 import { ensureSigningKey } from "./lib/jwt";
 import { ensureNullifierSecretLoaded } from "./lib/nullifier";
+import { startWebhookPoller } from "./lib/webhookDelivery";
 
 const rawPort = process.env["PORT"];
 
@@ -39,4 +40,6 @@ app.listen(port, (err) => {
   ensureDemoApiKey().catch((bootstrapErr) => {
     logger.warn({ err: bootstrapErr }, "Demo API key bootstrap failed");
   });
+  // Single-instance assumption — see docs/RUNBOOK.md "Webhook delivery".
+  startWebhookPoller();
 });
