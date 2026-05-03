@@ -1,29 +1,26 @@
 import { createHmac, randomBytes } from "node:crypto";
-import { logger } from "./logger";
 
 const NULLIFIER_VERSION = "v1";
 
 let cachedSecret: string | null = null;
 
+/**
+ * The master HMAC secret is REQUIRED in every runtime (dev, staging, prod).
+ * No code-level fallback is provided: an insecure default would let a
+ * misconfigured server silently issue badges whose nullifiers anyone with
+ * the well-known fallback could forge. See docs/key-rotation.md.
+ */
 function loadMasterSecret(): string {
   if (cachedSecret) return cachedSecret;
   const explicit = process.env.NULLIFIER_MASTER_SECRET;
-  if (explicit && explicit.length >= 32) {
-    cachedSecret = explicit;
-    return cachedSecret;
-  }
-  if (process.env.NODE_ENV === "production") {
+  if (!explicit || explicit.length < 32) {
     throw new Error(
-      "NULLIFIER_MASTER_SECRET is required in production (>=32 chars). " +
-        "Generate with `openssl rand -hex 32`.",
+      "NULLIFIER_MASTER_SECRET is required (>=32 chars). " +
+        "Generate with `openssl rand -hex 32` and set it as a Replit Secret. " +
+        "There is no development fallback; see docs/key-rotation.md.",
     );
   }
-  // Dev fallback: stable, clearly-marked, NOT for production.
-  cachedSecret =
-    "dev-only-nullifier-master-secret-do-not-use-in-production-0000000000";
-  logger.warn(
-    "NULLIFIER_MASTER_SECRET not set — using insecure development fallback",
-  );
+  cachedSecret = explicit;
   return cachedSecret;
 }
 

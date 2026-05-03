@@ -18,6 +18,9 @@ import { rateLimit } from "../middlewares/rateLimit";
 import { idempotencyMiddleware } from "../middlewares/idempotency";
 import { requestLoggerMiddleware } from "../middlewares/requestLogger";
 import { deriveNullifier, deriveCommitment } from "../lib/nullifier";
+// Note: deriveNullifier is intentionally only used at /register time; /verify
+// trusts the server-side commitment registry rather than recomputing from
+// any client-supplied subject so the badge stays free of stable identifiers.
 import { signHumanBadge, verifyHumanBadge } from "../lib/jwt";
 import { getVendorByName } from "../lib/vendor";
 
@@ -174,9 +177,6 @@ router.post("/register", ...publicWrite, async (req, res, next) => {
 
     const nullifier = deriveNullifier(subjectId, appContext);
     const { commitmentHash } = deriveCommitment(subjectId);
-    // capture subject for the JWT claim — used by /verify to recompute
-    // the expected nullifier from (subject_id, app_context) + master key.
-    const subjectIdForBadge = subjectId;
 
     const existing = await db
       .select({ nullifier: commitmentsTable.nullifier })
@@ -222,7 +222,6 @@ router.post("/register", ...publicWrite, async (req, res, next) => {
       audience: req.apiContext.project.id,
       nullifier,
       appContext,
-      subjectId: subjectIdForBadge,
     });
 
     res.json({
@@ -291,44 +290,33 @@ router.post("/verify", ...publicWrite, async (req, res, next) => {
       return;
     }
 
-    // Deterministic recomputation: derive the expected nullifier from the
-    // subject_id claim and the *requested* appContext using the server's
-    // master HMAC secret, then compare to the nullifier embedded in the
-    // badge. This makes the badge's `nullifier` claim a redundant check,
-    // not a trust anchor — a forged claim with mismatched (subject_id,
-    // app_context) is rejected even if the JWT signature itself verifies.
-    if (!claims.subject_id) {
-      await incrementStats("failure");
-      res.json({
-        verified: false,
-        verifiedAt: now.toISOString(),
-        message: "Badge is missing subject binding",
-      });
-      return;
-    }
-    const expectedNullifier = deriveNullifier(claims.subject_id, appContext);
-    if (expectedNullifier !== claims.nullifier) {
-      await incrementStats("failure");
-      res.json({
-        verified: false,
-        verifiedAt: now.toISOString(),
-        message: "Nullifier does not match recomputation from subject + app_context",
-      });
-      return;
-    }
-
-    // Cross-check that the nullifier really exists in the registry.
+    // The badge contains no subject identifier — verify by looking up the
+    // server-side commitment record by the JWT subject (commitment hash)
+    // and confirming the badge's nullifier + appContext match what we
+    // recorded at /register time. A signed badge whose claims have been
+    // tampered with (different nullifier or appContext for the same
+    // commitment) will fail this cross-check even though the signature
+    // verifies.
     const [record] = await db
       .select()
       .from(commitmentsTable)
-      .where(eq(commitmentsTable.nullifier, claims.nullifier))
+      .where(eq(commitmentsTable.commitmentHash, claims.sub))
       .limit(1);
-    if (!record || record.appContext !== appContext) {
+    if (!record) {
       await incrementStats("failure");
       res.json({
         verified: false,
         verifiedAt: now.toISOString(),
-        message: "Nullifier is not registered for this app context",
+        message: "Commitment is not registered",
+      });
+      return;
+    }
+    if (record.nullifier !== claims.nullifier || record.appContext !== appContext) {
+      await incrementStats("failure");
+      res.json({
+        verified: false,
+        verifiedAt: now.toISOString(),
+        message: "Badge claims do not match the registered commitment",
       });
       return;
     }

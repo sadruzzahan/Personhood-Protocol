@@ -1,4 +1,3 @@
-import { generateKeyPairSync, randomUUID } from "node:crypto";
 import {
   exportJWK,
   importPKCS8,
@@ -15,18 +14,15 @@ const BADGE_TTL_SECONDS = 24 * 60 * 60;
 
 export interface HumanBadgeClaims {
   iss: string;
+  // The badge subject is the per-registration commitment hash. We deliberately
+  // do NOT embed the underlying vendor subject identifier in the badge —
+  // that would create a stable cross-app linker and weaken unlinkability.
+  // /verify recomputes correctness by looking up the commitment in the
+  // server-side registry, not by trusting any client-supplied subject.
   sub: string;
   aud: string;
   nullifier: string;
   app_context: string;
-  /**
-   * Vendor-derived, one-way subject identifier embedded in the badge so
-   * /verify can recompute the expected nullifier deterministically from
-   * (subject_id, app_context) and the master HMAC secret. The vendor
-   * subject is itself a one-way hash of the underlying account id, so
-   * embedding it does not leak PII.
-   */
-  subject_id: string;
   iat: number;
   exp: number;
 }
@@ -76,27 +72,12 @@ function loadKeys(): ResolvedKeyMaterial {
   const publicPem = process.env.JWT_PUBLIC_KEY_PEM;
   const kid = process.env.JWT_KID;
 
-  let active: SigningKeypair;
-  if (privatePem && publicPem && kid) {
-    active = { kid, privatePem, publicPem };
-  } else {
-    if (process.env.NODE_ENV === "production") {
-      throw new Error(
-        "JWT signing keys missing — set JWT_PRIVATE_KEY_PEM, JWT_PUBLIC_KEY_PEM and JWT_KID as Replit Secrets. Generate with `openssl genrsa 2048 | tee /tmp/p.pem | openssl pkcs8 -topk8 -nocrypt && openssl rsa -in /tmp/p.pem -pubout`.",
-      );
-    }
-    const { publicKey, privateKey } = generateKeyPairSync("rsa", {
-      modulusLength: 2048,
-      publicKeyEncoding: { type: "spki", format: "pem" },
-      privateKeyEncoding: { type: "pkcs8", format: "pem" },
-    });
-    const ephemeralKid = `dev_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
-    active = { kid: ephemeralKid, privatePem: privateKey, publicPem: publicKey };
-    logger.warn(
-      { kid: ephemeralKid },
-      "JWT signing keys not set — generated ephemeral dev keypair. Previously-issued badges will not verify across restarts. Set JWT_PRIVATE_KEY_PEM/JWT_PUBLIC_KEY_PEM/JWT_KID to persist.",
+  if (!privatePem || !publicPem || !kid) {
+    throw new Error(
+      "JWT signing keys are required in every runtime — set JWT_PRIVATE_KEY_PEM, JWT_PUBLIC_KEY_PEM and JWT_KID as Replit Secrets. Generate with `openssl genrsa 2048 | tee /tmp/p.pem | openssl pkcs8 -topk8 -nocrypt && openssl rsa -in /tmp/p.pem -pubout`. There is no development fallback; see docs/key-rotation.md.",
     );
   }
+  const active: SigningKeypair = { kid, privatePem, publicPem };
 
   const publicByKid = new Map<string, { publicPem: string; alg: string }>();
   publicByKid.set(active.kid, { publicPem: active.publicPem, alg: ALG });
@@ -139,7 +120,6 @@ export async function signHumanBadge(args: {
   audience: string; // project id
   nullifier: string;
   appContext: string;
-  subjectId: string;
 }): Promise<{ token: string; expiresAt: Date }> {
   const { active } = loadKeys();
   let privateKey = privateKeyCache.get(active.kid);
@@ -152,7 +132,6 @@ export async function signHumanBadge(args: {
   const token = await new SignJWT({
     nullifier: args.nullifier,
     app_context: args.appContext,
-    subject_id: args.subjectId,
   })
     .setProtectedHeader({ alg: ALG, kid: active.kid, typ: "JWT" })
     .setIssuer(issuer())

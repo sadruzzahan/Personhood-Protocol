@@ -1,11 +1,9 @@
-import { sql } from "drizzle-orm";
 import {
   pgTable,
   text,
   timestamp,
   jsonb,
   index,
-  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { projectsTable } from "./dashboard";
 
@@ -24,6 +22,8 @@ export const personaInquiriesTable = pgTable(
     status: text("status").notNull(),
     // Vendor-provided one-way subject identifier. Null until the inquiry
     // is completed. This is the key off which we derive the nullifier.
+    // It NEVER leaves the server — it's not echoed in any API response and
+    // is not embedded in human-badge JWTs.
     subjectId: text("subject_id"),
     // Most recent vendor event payload (for debugging, redactable).
     rawPayload: jsonb("raw_payload"),
@@ -48,35 +48,10 @@ export const personaInquiriesTable = pgTable(
   }),
 );
 
-// RSA-2048 signing keys for human-badge JWTs. Public key is published at
-// /.well-known/jwks.json so any relying party can verify offline. The
-// private key is also stored in this table — the trust boundary is the
-// database itself, which is gated by DATABASE_URL the same way an env
-// secret is gated by an env var. See docs/key-rotation.md.
-export const jwtKeysTable = pgTable(
-  "jwt_keys",
-  {
-    kid: text("kid").primaryKey(),
-    // PEM-encoded SPKI public key.
-    publicPem: text("public_pem").notNull(),
-    // PEM-encoded PKCS8 private key.
-    privatePem: text("private_pem").notNull(),
-    alg: text("alg").notNull().default("RS256"),
-    // "active" | "deprecated". Exactly one row should be active at a time;
-    // deprecated keys remain published in the JWKS until their grace
-    // period elapses so already-issued badges can still be verified.
-    status: text("status").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-    deprecatedAt: timestamp("deprecated_at", { withTimezone: true }),
-  },
-  (t) => ({
-    byStatus: uniqueIndex("jwt_keys_active_idx")
-      .on(t.status)
-      .where(sql`status = 'active'`),
-  }),
-);
+// NOTE: there is intentionally NO `jwt_keys` table. RSA-2048 signing keys
+// for human-badge JWTs are loaded exclusively from environment secrets
+// (JWT_PRIVATE_KEY_PEM / JWT_PUBLIC_KEY_PEM / JWT_KID) so the private key
+// never crosses the database trust boundary. See docs/key-rotation.md for
+// rotation procedure.
 
 export type PersonaInquiry = typeof personaInquiriesTable.$inferSelect;
-export type JwtKey = typeof jwtKeysTable.$inferSelect;
