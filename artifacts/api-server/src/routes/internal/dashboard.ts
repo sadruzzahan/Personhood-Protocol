@@ -37,38 +37,28 @@ async function ensurePersonalOrg(userId: string) {
       .limit(1);
     if (existing.length > 0) return existing[0].org;
 
-    const slug = `org-${shortHash(userId, 8)}`;
-    // ON CONFLICT on slug → re-select. Two concurrent inserts will see one
-    // succeed and the other fall through to the SELECT below.
-    const inserted = await tx
+    // Identity is *only* derived from membership (lookup above). The slug is
+    // purely cosmetic — derive it from the new org's random id so it cannot
+    // collide with any other user's personal org. We never use slug-conflict
+    // re-select to resolve identity, which would let a hash collision on
+    // userId silently grant cross-tenant access.
+    const orgId = newId("org");
+    const slug = `org-${orgId.slice(-12)}`;
+    const [org] = await tx
       .insert(organizationsTable)
       .values({
-        id: newId("org"),
+        id: orgId,
         name: "Personal",
         slug,
         createdByUserId: userId,
       })
-      .onConflictDoNothing({ target: organizationsTable.slug })
       .returning();
-
-    let org = inserted[0];
     if (!org) {
-      const [row] = await tx
-        .select()
-        .from(organizationsTable)
-        .where(eq(organizationsTable.slug, slug))
-        .limit(1);
-      if (!row) {
-        throw new Error("Failed to create or load personal organization");
-      }
-      org = row;
+      throw new Error("Failed to create personal organization");
     }
-
     await tx
       .insert(orgMembershipsTable)
-      .values({ organizationId: org.id, userId, role: "owner" })
-      .onConflictDoNothing();
-
+      .values({ organizationId: org.id, userId, role: "owner" });
     return org;
   });
 }
