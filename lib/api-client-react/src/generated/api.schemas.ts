@@ -48,43 +48,104 @@ startup, and this check verifies that bootstrap completed).
   checks?: ReadinessStatusChecks;
 }
 
-/**
- * Hardware tier used for biometric capture
- */
-export type RegisterRequestDeviceTier =
-  (typeof RegisterRequestDeviceTier)[keyof typeof RegisterRequestDeviceTier];
+export interface CreateInquiryRequest {
+  /**
+   * Optional opaque id you can use to correlate this inquiry back to your own user record.
+   * @maxLength 128
+   */
+  referenceId?: string;
+  /**
+   * Where the hosted flow should send the user after completion.
+   * @maxLength 512
+   */
+  redirectUri?: string;
+}
 
-export const RegisterRequestDeviceTier = {
-  software: "software",
-  secure_enclave: "secure_enclave",
-  specialized: "specialized",
+export type InquirySessionVendor =
+  (typeof InquirySessionVendor)[keyof typeof InquirySessionVendor];
+
+export const InquirySessionVendor = {
+  mock: "mock",
+  persona: "persona",
 } as const;
 
+export type InquirySessionStatus =
+  (typeof InquirySessionStatus)[keyof typeof InquirySessionStatus];
+
+export const InquirySessionStatus = {
+  pending: "pending",
+} as const;
+
+export interface InquirySession {
+  inquiryId: string;
+  /** Open this URL in a browser to start the hosted liveness check. */
+  hostedUrl: string;
+  vendor: InquirySessionVendor;
+  status: InquirySessionStatus;
+}
+
+export type InquiryStatusStatus =
+  (typeof InquiryStatusStatus)[keyof typeof InquiryStatusStatus];
+
+export const InquiryStatusStatus = {
+  pending: "pending",
+  completed: "completed",
+  approved: "approved",
+  declined: "declined",
+  expired: "expired",
+  failed: "failed",
+} as const;
+
+export type InquiryStatusDecision =
+  | (typeof InquiryStatusDecision)[keyof typeof InquiryStatusDecision]
+  | null;
+
+export const InquiryStatusDecision = {
+  approved: "approved",
+  declined: "declined",
+} as const;
+
+export interface InquiryStatus {
+  inquiryId: string;
+  status: InquiryStatusStatus;
+  decision?: InquiryStatusDecision;
+}
+
 export interface RegisterRequest {
-  /** Base64-encoded simulated biometric payload (face geometry, fingerprint hash, etc.) */
-  biometricData: string;
-  /** Hardware tier used for biometric capture */
-  deviceTier: RegisterRequestDeviceTier;
-  /** Application context identifier for scoped nullifier generation */
+  /** Id returned by POST /inquiries after the user completes the hosted flow. */
+  inquiryId: string;
+  /**
+   * Application context. Same (subject, appContext) ⇒ same nullifier; different appContexts are uncorrelated.
+   * @maxLength 128
+   */
   appContext: string;
 }
 
 export interface RegisterResponse {
+  /** HMAC-SHA256 commitment id. Cannot be reversed to recover the subject. */
   commitmentHash: string;
+  /** HMAC-SHA256 nullifier scoped to (subject, appContext). */
   nullifier: string;
+  /** RS256-signed JWT. Verify with JWKS at /.well-known/jwks.json. */
+  humanBadge: string;
   registeredAt: string;
-  proofGenerationMs: number;
+  /** When the issued human badge expires (24h). */
+  expiresAt: string;
 }
 
 export interface VerifyRequest {
-  proof: string;
-  nullifier: string;
+  /** The JWT returned by /register. */
+  humanBadge: string;
+  /** Must match the app_context claim in the badge. */
   appContext: string;
 }
 
 export interface VerifyResponse {
   verified: boolean;
-  humanBadge?: string;
+  /** Echoed from the badge claims; absent on failure. */
+  nullifier?: string;
+  /** Echoed from the badge subject; absent on failure. */
+  commitmentHash?: string;
   verifiedAt: string;
   message: string;
 }
@@ -124,6 +185,13 @@ export const ErrorEnvelopeErrorCode = {
   conflict: "conflict",
   internal_error: "internal_error",
   service_unavailable: "service_unavailable",
+  inquiry_not_found: "inquiry_not_found",
+  inquiry_not_approved: "inquiry_not_approved",
+  inquiry_consumed: "inquiry_consumed",
+  invalid_badge: "invalid_badge",
+  expired_badge: "expired_badge",
+  vendor_unavailable: "vendor_unavailable",
+  webhook_signature_invalid: "webhook_signature_invalid",
 } as const;
 
 export type ErrorEnvelopeError = {

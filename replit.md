@@ -9,14 +9,17 @@ Full web presence for a cryptographic, privacy-preserving human verification pro
 ### `artifacts/api-server` — Protocol API
 Express 5 backend at port 8080. Persists data in Postgres via Drizzle ORM.
 
-Public endpoints (under `/api`, **all require `Authorization: Bearer pk_test_…` or `pk_live_…`**):
-- `POST /api/register` — register a biometric commitment. Honors `Idempotency-Key`. Write rate limit: 60/min/project.
-- `POST /api/verify` — verify a proof. Honors `Idempotency-Key`. Write rate limit: 60/min/project.
-- `GET /api/stats` — protocol statistics. Read rate limit: 600/min/project.
-- `GET /api/nullifier/:hash` — check if a nullifier has been used. Read rate limit: 600/min/project.
-- `GET /api/healthz` — health check (DB ping; 503 on failure). No auth.
-- `GET /api/readyz` — readiness probe. No auth.
-- `GET /api/_demo/api-key` — returns the public, project-bound demo key the marketing site uses for the playground/demo. No auth.
+Public endpoints (under `/api`, **all require `Authorization: Bearer pk_test_…` or `pk_live_…`** unless noted):
+- `POST /api/inquiries` — open a Persona liveness inquiry (or mock equivalent). Returns `{ inquiryId, hostedUrl, vendor, status }`. Write rate limit.
+- `GET /api/inquiries/:inquiryId` — poll inquiry status. Read rate limit.
+- `POST /api/register` — exchange an approved inquiry for a registered nullifier and an RS256-signed human-badge JWT. Body: `{ inquiryId, appContext }`. Honors `Idempotency-Key`. Write rate limit.
+- `POST /api/verify` — verify a human-badge JWT against the JWKS, registry, audience and `appContext`. Body: `{ humanBadge, appContext }`. Honors `Idempotency-Key`. Write rate limit.
+- `POST /api/webhooks/persona` — Persona webhook receiver. Verifies `t=…,v1=…` HMAC-SHA256 signature against `PERSONA_WEBHOOK_SECRET` and idempotently updates inquiry state. No bearer auth (signature is the auth).
+- `GET /api/stats` — protocol statistics. Read rate limit.
+- `GET /api/nullifier/:hash` — check if a nullifier has been used. Read rate limit.
+- `GET /api/healthz`, `GET /api/readyz` — health/readiness probes. No auth.
+- `GET /api/_demo/api-key` — returns the public, project-bound demo key. No auth.
+- `GET /.well-known/jwks.json` — public JWKS for offline RS256 badge verification. No auth, mounted at the server root (RFC 8615). Also exposed under `/api/.well-known/jwks.json` and `/api/jwks.json` because the platform's path-based proxy only forwards `/api/*` to this artifact — production clients should use one of the `/api/...` paths until a domain-level reverse proxy is in place.
 
 Hardening surface (all wired into the public router):
 - API key auth via HMAC lookup with debounced `last_used_at` updates; live keys enforce `projects.allowed_origins`.
@@ -42,15 +45,24 @@ Internal dashboard endpoints (under `/api/internal/dashboard`, gated by Clerk se
 - `CLERK_PUBLISHABLE_KEY` / `VITE_CLERK_PUBLISHABLE_KEY` — Clerk publishable key (non-secret, identical value). Auto-set by `setupClerkWhitelabelAuth`.
 - `CLERK_SECRET_KEY` — Clerk backend secret. Auto-set by `setupClerkWhitelabelAuth`.
 - `API_KEY_HMAC_SECRET` — server-side HMAC secret used to hash issued API keys. **Required (≥16 chars) in production**; the server fails to start without it. Generate with `openssl rand -hex 32`. In development, a clearly-marked fallback is used and a warning is logged on startup.
+- `NULLIFIER_MASTER_SECRET` — server-side HMAC master key used to derive per-app nullifiers and commitment hashes. **Required (≥32 chars) in production.** Generate with `openssl rand -hex 32`. In development, a fallback is used and a warning is logged on startup. Rotating this value invalidates every previously-issued badge.
+- `PERSONA_API_KEY` + `PERSONA_TEMPLATE_ID` — Persona credentials. When both are set the real Persona vendor is used; otherwise an auto-approving mock vendor is used so the demo runs end-to-end without external accounts. Override explicitly with `VERIFICATION_VENDOR=persona|mock`.
+- `PERSONA_WEBHOOK_SECRET` — used to verify `t=…,v1=…` HMAC-SHA256 signatures on `POST /api/webhooks/persona`. Required only when running with the Persona vendor.
+- `JWT_ISSUER` — issuer claim used in human-badge JWTs (default `https://proof-of-personhood.local` in dev). Set to your public origin for production.
 - `DEMO_API_KEY` — optional. Plaintext key (`pk_test_…`) the bootstrap should bind to the public demo project. If unset, a deterministic dev value is used. Anyone may use this key — it's bound only to the demo project (test env, no origin restrictions, normal rate limits).
 - `ENABLE_PUBLIC_DEMO_KEY` — set to `1` to expose `GET /api/_demo/api-key` in production deployments (the marketing-site deploy needs this). In non-production runtimes the endpoint is on by default.
+
+### Verification flow & key storage trade-off
+The signing keypair for human-badge JWTs is auto-generated on first boot (RSA-2048, RS256) and **persisted in the `jwt_keys` Postgres table**, not in env vars. This intentionally deviates from the "private key only in env" pattern: it lets the server bootstrap with no extra config, supports rotation by inserting a new active row, and keeps multi-instance deployments consistent without an external KMS. The trust boundary is therefore the same as `DATABASE_URL` — an attacker with the database has the signing key. For deployments that need stricter separation, replace `lib/jwt.ts` with a KMS-backed signer.
+
+The badge JWT carries `{ nullifier, app_context, iss, sub=commitmentHash, aud=projectId, iat, exp }` and is signed with the active `kid` from `jwt_keys`. `/verify` validates: signature against the JWKS, `aud === projectId`, `app_context` matches the caller, badge not expired, and the nullifier still exists in the commitment registry (so revoking a commitment invalidates outstanding badges).
 
 ### `artifacts/protocol-site` — Marketing & Developer Site
 React + Vite + Wouter + TanStack Query. Dark monochrome theme, electric cyan accent, Geist/Geist Mono fonts, no border radius. Preview at `/`.
 
 Pages:
 - `/` — Marketing landing page (hero, problem, how-it-works, honest scope, use cases, stats teaser)
-- `/demo` — Simulated 4-step walkthrough (liveness → nullifier → attestation → badge); banner clearly labels it as simulation
+- `/demo` — End-to-end 4-step walkthrough (inquiry → liveness poll → nullifier register → JWT badge verify); banner shows the active vendor (`persona` or `mock`)
 - `/developers` — SDK snippets (JS/Python/Go), API reference, threat-model summary, live playground
 - `/stats` — Live service stats with animated counters, auto-refresh
 - `/trust` — Threat model (what we protect against / what we don't), data handling, subprocessors, retention, incident response

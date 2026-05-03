@@ -30,8 +30,12 @@ import type {
 
 import type {
   ConflictResponse,
+  CreateInquiryRequest,
+  ErrorEnvelope,
   ForbiddenResponse,
   HealthStatus,
+  InquirySession,
+  InquiryStatus,
   NullifierStatus,
   PayloadTooLargeResponse,
   ProtocolStats,
@@ -212,8 +216,215 @@ export function useReadinessCheck<
 }
 
 /**
- * Accepts a simulated biometric payload, generates a cryptographic commitment hash and nullifier, stores them, and returns the commitment details.
- * @summary Register a biometric commitment
+ * Creates a hosted identity-verification inquiry with the configured
+vendor (Persona by default; a "mock" vendor activates automatically
+when Persona credentials are absent so the demo flow keeps working).
+Returns a `hostedUrl` that you redirect the end user to.
+
+ * @summary Start a hosted liveness inquiry
+ */
+export const getCreateInquiryUrl = () => {
+  return `/api/inquiries`;
+};
+
+export const createInquiry = async (
+  createInquiryRequest: CreateInquiryRequest,
+  options?: RequestInit,
+): Promise<InquirySession> => {
+  return customFetch<InquirySession>(getCreateInquiryUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(createInquiryRequest),
+  });
+};
+
+export const getCreateInquiryMutationOptions = <
+  TError = ErrorType<
+    | UnauthorizedResponse
+    | ForbiddenResponse
+    | ValidationErrorResponse
+    | RateLimitedResponse
+    | ErrorEnvelope
+  >,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createInquiry>>,
+    TError,
+    { data: BodyType<CreateInquiryRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof createInquiry>>,
+  TError,
+  { data: BodyType<CreateInquiryRequest> },
+  TContext
+> => {
+  const mutationKey = ["createInquiry"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof createInquiry>>,
+    { data: BodyType<CreateInquiryRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return createInquiry(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type CreateInquiryMutationResult = NonNullable<
+  Awaited<ReturnType<typeof createInquiry>>
+>;
+export type CreateInquiryMutationBody = BodyType<CreateInquiryRequest>;
+export type CreateInquiryMutationError = ErrorType<
+  | UnauthorizedResponse
+  | ForbiddenResponse
+  | ValidationErrorResponse
+  | RateLimitedResponse
+  | ErrorEnvelope
+>;
+
+/**
+ * @summary Start a hosted liveness inquiry
+ */
+export const useCreateInquiry = <
+  TError = ErrorType<
+    | UnauthorizedResponse
+    | ForbiddenResponse
+    | ValidationErrorResponse
+    | RateLimitedResponse
+    | ErrorEnvelope
+  >,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createInquiry>>,
+    TError,
+    { data: BodyType<CreateInquiryRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof createInquiry>>,
+  TError,
+  { data: BodyType<CreateInquiryRequest> },
+  TContext
+> => {
+  return useMutation(getCreateInquiryMutationOptions(options));
+};
+
+/**
+ * Returns the current status of an inquiry. Use this to wait until the user has completed the hosted flow before calling /register.
+ * @summary Poll inquiry status
+ */
+export const getGetInquiryUrl = (inquiryId: string) => {
+  return `/api/inquiries/${inquiryId}`;
+};
+
+export const getInquiry = async (
+  inquiryId: string,
+  options?: RequestInit,
+): Promise<InquiryStatus> => {
+  return customFetch<InquiryStatus>(getGetInquiryUrl(inquiryId), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetInquiryQueryKey = (inquiryId: string) => {
+  return [`/api/inquiries/${inquiryId}`] as const;
+};
+
+export const getGetInquiryQueryOptions = <
+  TData = Awaited<ReturnType<typeof getInquiry>>,
+  TError = ErrorType<
+    UnauthorizedResponse | ErrorEnvelope | RateLimitedResponse
+  >,
+>(
+  inquiryId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getInquiry>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetInquiryQueryKey(inquiryId);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getInquiry>>> = ({
+    signal,
+  }) => getInquiry(inquiryId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!inquiryId,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getInquiry>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetInquiryQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getInquiry>>
+>;
+export type GetInquiryQueryError = ErrorType<
+  UnauthorizedResponse | ErrorEnvelope | RateLimitedResponse
+>;
+
+/**
+ * @summary Poll inquiry status
+ */
+
+export function useGetInquiry<
+  TData = Awaited<ReturnType<typeof getInquiry>>,
+  TError = ErrorType<
+    UnauthorizedResponse | ErrorEnvelope | RateLimitedResponse
+  >,
+>(
+  inquiryId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getInquiry>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetInquiryQueryOptions(inquiryId, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Mints a Proof-of-Personhood commitment from a completed inquiry.
+The server derives a per-app nullifier (HMAC-SHA256) and signs an
+RS256 human badge JWT. Verifiers can validate the badge offline
+using the JWKS at `/.well-known/jwks.json`.
+
+ * @summary Register a verified human commitment
  */
 export const getRegisterCommitmentUrl = () => {
   return `/api/register`;
@@ -292,7 +503,7 @@ export type RegisterCommitmentMutationError = ErrorType<
 >;
 
 /**
- * @summary Register a biometric commitment
+ * @summary Register a verified human commitment
  */
 export const useRegisterCommitment = <
   TError = ErrorType<
@@ -323,8 +534,12 @@ export const useRegisterCommitment = <
 };
 
 /**
- * Verifies a previously-issued attestation token against the nullifier registry. Returns a human-badge token on success.
- * @summary Verify an attestation token
+ * Verifies an RS256-signed human badge JWT. Checks the signature
+against the JWKS, the issuer, the audience (your project id), the
+expiration, and the app_context claim. Cross-checks the embedded
+nullifier against the on-chain-style commitment registry.
+
+ * @summary Verify a human-badge JWT
  */
 export const getVerifyProofUrl = () => {
   return `/api/verify`;
@@ -403,7 +618,7 @@ export type VerifyProofMutationError = ErrorType<
 >;
 
 /**
- * @summary Verify an attestation token
+ * @summary Verify a human-badge JWT
  */
 export const useVerifyProof = <
   TError = ErrorType<

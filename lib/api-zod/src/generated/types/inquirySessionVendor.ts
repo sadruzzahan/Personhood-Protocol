@@ -18,14 +18,10 @@ machine-readable `error.code` and the `request_id` for log correlation.
  * OpenAPI spec version: 0.1.0
  */
 
-/**
- * Hardware tier used for biometric capture
- */
-export type RegisterRequestDeviceTier =
-  (typeof RegisterRequestDeviceTier)[keyof typeof RegisterRequestDeviceTier];
+export type InquirySessionVendor =
+  (typeof InquirySessionVendor)[keyof typeof InquirySessionVendor];
 
-export const RegisterRequestDeviceTier = {
-  software: "software",
-  secure_enclave: "secure_enclave",
-  specialized: "specialized",
+export const InquirySessionVendor = {
+  mock: "mock",
+  persona: "persona",
 } as const;

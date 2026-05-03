@@ -8,72 +8,70 @@ import {
 
 const CODE_SNIPPETS: Record<string, string> = {
   JavaScript: `import {
+  useCreateInquiry,
   useRegisterCommitment,
-  useVerifyProof
+  useVerifyProof,
+  getInquiry,
 } from "@workspace/api-client-react";
 
-// 1. Start a verification (today: simulated;
-//    production: opens vendor liveness flow).
-const register = useRegisterCommitment();
+// 1. Open a Persona inquiry. Send the user to result.hostedUrl.
+const inquiry = await createInquiry.mutateAsync({
+  data: { referenceId: yourUserId }
+});
+window.location.href = inquiry.hostedUrl;
 
-register.mutate({
+// 2. After the webhook flips status to "approved", register
+//    the verification and mint a JWT human badge.
+await pollUntilApproved(inquiry.inquiryId);
+const reg = await register.mutateAsync({
   data: {
-    biometricData: simulatedSubjectPayload(),
-    deviceTier: "secure_enclave",
+    inquiryId: inquiry.inquiryId,
+    appContext: "your-app-id"   // per-app nullifier scope
+  }
+});
+
+// 3. Anyone can verify the badge against /.well-known/jwks.json
+const result = await verify.mutateAsync({
+  data: {
+    humanBadge: reg.humanBadge,
     appContext: "your-app-id"
   }
-}, {
-  onSuccess: ({ commitmentHash, nullifier }) => {
-    // Treat the returned token as opaque.
-    // The production API will return a JWT human-badge.
-    const attestation_token = mintAttestation(nullifier);
+});
 
-    verify.mutate({
-      data: {
-        // attestation_token is the documented field name.
-        // Wire-level field is currently named "proof"
-        // until the codegen rename ships.
-        attestation_token,
-        proof: attestation_token,
-        nullifier,
-        appContext: "your-app-id"
-      }
-    }, {
-      onSuccess: ({ verified, humanBadge }) => {
-        if (verified) markUserAsHuman(humanBadge);
-      }
-    });
-  }
-});`,
+if (result.verified) markUserAsHuman(reg.humanBadge);`,
 
-  Python: `import httpx
+  Python: `import httpx, time
 
 BASE = "https://your-domain.com/api"
+HEADERS = {"Authorization": f"Bearer {API_KEY}"}
 
-# 1. Start a verification.
-reg = httpx.post(f"{BASE}/register", json={
-    "biometricData": simulated_subject_payload(),
-    "deviceTier": "secure_enclave",
+# 1. Open a Persona inquiry, send user to hostedUrl.
+inq = httpx.post(f"{BASE}/inquiries", headers=HEADERS,
+    json={"referenceId": user_id}).json()
+redirect_user_to(inq["hostedUrl"])
+
+# 2. Poll until the webhook flips it to "approved".
+while True:
+    s = httpx.get(f"{BASE}/inquiries/{inq['inquiryId']}",
+                  headers=HEADERS).json()
+    if s["status"] == "approved":
+        break
+    time.sleep(1)
+
+# 3. Register: server derives nullifier and mints RS256 JWT.
+reg = httpx.post(f"{BASE}/register", headers=HEADERS, json={
+    "inquiryId": inq["inquiryId"],
     "appContext": "your-app-id"
 }).json()
 
-nullifier = reg["nullifier"]
-
-# 2. Mint an attestation token (today: opaque;
-#    production: JWT issued after vendor liveness).
-attestation_token = mint_attestation(nullifier)
-
-# 3. Verify and mark the user. The wire-level field is
-#    still "proof" until the codegen rename ships.
-result = httpx.post(f"{BASE}/verify", json={
-    "attestation_token": attestation_token,
-    "proof": attestation_token,
-    "nullifier": nullifier,
+# 4. Anyone with the public JWKS can verify offline.
+result = httpx.post(f"{BASE}/verify", headers=HEADERS, json={
+    "humanBadge": reg["humanBadge"],
     "appContext": "your-app-id"
 }).json()
 
 if result["verified"]:
-    mark_user_as_human(result["humanBadge"])`,
+    mark_user_as_human(reg["humanBadge"])`,
 
   Go: `package main
 
@@ -85,29 +83,35 @@ import (
 
 const base = "https://your-domain.com/api"
 
-regBody, _ := json.Marshal(map[string]string{
-    "biometricData": simulatedSubjectPayload(),
-    "deviceTier":    "secure_enclave",
-    "appContext":    "your-app-id",
+inqBody, _ := json.Marshal(map[string]string{
+    "referenceId": userID,
 })
-regResp, _ := http.Post(base+"/register",
-    "application/json", bytes.NewBuffer(regBody))
+inqResp, _ := authedPost(base+"/inquiries", inqBody)
+
+var inq struct {
+    InquiryID string \`json:"inquiryId"\`
+    HostedURL string \`json:"hostedUrl"\`
+}
+json.NewDecoder(inqResp.Body).Decode(&inq)
+redirectUserTo(inq.HostedURL)
+
+// Wait for webhook -> status=approved (omitted).
+
+regBody, _ := json.Marshal(map[string]string{
+    "inquiryId":  inq.InquiryID,
+    "appContext": "your-app-id",
+})
+regResp, _ := authedPost(base+"/register", regBody)
 
 var reg struct {
-    CommitmentHash string \`json:"commitmentHash"\`
-    Nullifier      string \`json:"nullifier"\`
+    HumanBadge string \`json:"humanBadge"\`
+    Nullifier  string \`json:"nullifier"\`
 }
 json.NewDecoder(regResp.Body).Decode(&reg)
 
-token := mintAttestation(reg.Nullifier)
-
 verBody, _ := json.Marshal(map[string]string{
-    // attestation_token is the documented field name.
-    // proof is the current wire-level field (rename pending).
-    "attestation_token": token,
-    "proof":             token,
-    "nullifier":         reg.Nullifier,
-    "appContext":        "your-app-id",
+    "humanBadge": reg.HumanBadge,
+    "appContext": "your-app-id",
 })
 http.Post(base+"/verify", "application/json",
     bytes.NewBuffer(verBody))`,
@@ -116,43 +120,98 @@ http.Post(base+"/verify", "application/json",
 const ENDPOINTS = [
   {
     method: "POST",
-    path: "/api/register",
-    summary: "Register a verification",
-    desc: "In production, this is called after the user completes a vendor-hosted liveness check. The server derives a per-app nullifier from the verified subject and registers it. Today, the endpoint accepts a placeholder payload for the simulated demo.",
+    path: "/api/inquiries",
+    summary: "Start a verification inquiry",
+    desc: "Opens a hosted liveness check with the configured vendor (Persona in production, an auto-approving mock when no vendor credentials are set). Send the end user to the returned hostedUrl. Once they finish, the vendor's webhook flips the inquiry to status=\"approved\" and you can call /register.",
     request: `{
-  biometricData: string  // Today: opaque payload.
-                         // Production: vendor inquiry id.
-  deviceTier: "software" | "secure_enclave" | "specialized"
-  appContext: string     // Per-app scope for the nullifier
+  referenceId?: string  // Your stable user identifier;
+                        // never sent to the vendor in the clear.
 }`,
     response: `{
-  commitmentHash: string  // HMAC commitment
-  nullifier: string       // HMAC(master_key, subject || appContext)
-  registeredAt: string    // ISO timestamp
-  proofGenerationMs: number
+  inquiryId: string     // Use this for /register.
+  hostedUrl: string     // Send the user here.
+  vendor: "persona" | "mock"
+  status: "pending"
 }`,
-    errors: ["409 — Nullifier already registered for this app context", "422 — Invalid request payload"],
+    errors: ["503 — Vendor unavailable"],
+  },
+  {
+    method: "GET",
+    path: "/api/inquiries/:inquiryId",
+    summary: "Poll inquiry status",
+    desc: "Returns the current status of an inquiry. Poll this until status=\"approved\" before calling /register, or rely on the webhook your project receives.",
+    request: "inquiryId — path parameter",
+    response: `{
+  inquiryId: string
+  status: "pending" | "approved" | "declined" | "expired"
+  vendor: "persona" | "mock"
+  approvedAt?: string
+}`,
+    errors: ["404 — Unknown inquiry"],
+  },
+  {
+    method: "POST",
+    path: "/api/register",
+    summary: "Register a verification & mint badge",
+    desc: "After an inquiry is approved, exchange it for a registered nullifier and a JWT human badge. The server derives a per-app nullifier as HMAC(NULLIFIER_MASTER_SECRET, subject || appContext), records it, and signs a 24-hour RS256 JWT against the key published at /.well-known/jwks.json.",
+    request: `{
+  inquiryId: string     // From POST /api/inquiries
+  appContext: string    // Per-app nullifier scope
+}`,
+    response: `{
+  commitmentHash: string
+  nullifier: string
+  humanBadge: string    // RS256 JWT
+  registeredAt: string
+  expiresAt: string     // Badge JWT exp
+}`,
+    errors: [
+      "409 — Nullifier already registered for this appContext",
+      "409 — Inquiry already consumed",
+      "412 — Inquiry not yet approved",
+      "422 — Invalid request payload",
+    ],
   },
   {
     method: "POST",
     path: "/api/verify",
-    summary: "Verify an attestation token",
-    desc: "Verifies a previously-issued attestation token against the nullifier registry. Returns a human-badge token on success, which downstream applications store and verify offline. The documented field name is `attestation_token`; the legacy `proof` alias is accepted on the wire today and will be removed in a future release. Send both during the transition.",
+    summary: "Verify a human badge",
+    desc: "Verifies an RS256 human badge: signature against the JWKS, audience matches your project, app_context matches, badge has not expired, and the nullifier is still registered. You can also do this offline yourself by fetching /.well-known/jwks.json — this endpoint exists for convenience and to let you cross-check the registry.",
     request: `{
-  attestation_token: string  // Documented field name.
-                             // Opaque today; signed JWT in production.
-  proof: string              // Legacy alias, accepted on the wire today.
-                             // Will be removed in a future release.
-  nullifier: string          // From the registration step
-  appContext: string         // Must match registration context
+  humanBadge: string    // RS256 JWT issued by /register
+  appContext: string    // Must match the badge's app_context
 }`,
     response: `{
   verified: boolean
-  humanBadge?: string   // JWT badge if verified === true
+  nullifier?: string
+  commitmentHash?: string
   verifiedAt: string
   message: string
 }`,
     errors: ["422 — Invalid request payload"],
+  },
+  {
+    method: "GET",
+    path: "/.well-known/jwks.json",
+    summary: "Public signing keys (JWKS)",
+    desc: "Public RSA keys used to sign human badges. Standard JWKS format — drop into any RS256-aware JWT library (jose, PyJWT, github.com/golang-jwt/jwt) for offline verification. No auth required.",
+    request: "(none)",
+    response: `{
+  keys: [{
+    kty: "RSA", alg: "RS256", use: "sig",
+    kid: string, n: string, e: string
+  }]
+}`,
+    errors: [],
+  },
+  {
+    method: "POST",
+    path: "/api/webhooks/persona",
+    summary: "Persona webhook receiver",
+    desc: "Receives inquiry.completed events from Persona. Verifies the t=…,v1=… signature against PERSONA_WEBHOOK_SECRET, deduplicates by event id, and updates the inquiry status. Used internally — you only need this if you're operating your own deployment.",
+    request: "Persona webhook event (raw JSON body, signed)",
+    response: "{ received: true }",
+    errors: ["401 — Invalid signature"],
   },
   {
     method: "GET",
@@ -215,11 +274,10 @@ export function Developers() {
       setPlaygroundTab("nullifier");
     }
   }, [search]);
-  const [verifyProof, setVerifyProof] = useState("");
-  const [verifyNullifier, setVerifyNullifier] = useState("");
+  const [verifyBadge, setVerifyBadge] = useState("");
   const [verifyContext, setVerifyContext] = useState("proof-of-personhood-demo");
   const [verifyResult, setVerifyResult] = useState<{
-    verified: boolean; humanBadge?: string; verifiedAt: string; message: string;
+    verified: boolean; nullifier?: string; commitmentHash?: string; verifiedAt: string; message: string;
   } | null>(null);
 
   const { data: nullifierData, isLoading, isFetching } = useCheckNullifier(queryHash, {
@@ -235,13 +293,14 @@ export function Developers() {
   function runVerify() {
     setVerifyResult(null);
     verifyMutation.mutate(
-      { data: { proof: verifyProof.trim(), nullifier: verifyNullifier.trim(), appContext: verifyContext.trim() } },
+      { data: { humanBadge: verifyBadge.trim(), appContext: verifyContext.trim() } },
       {
         onSuccess: (result) => {
           setVerifyResult({
             verified: result.verified,
-            humanBadge: result.humanBadge,
-            verifiedAt: result.verifiedAt,
+            nullifier: result.nullifier,
+            commitmentHash: result.commitmentHash,
+            verifiedAt: typeof result.verifiedAt === "string" ? result.verifiedAt : new Date(result.verifiedAt as unknown as string).toISOString(),
             message: result.message,
           });
         },
@@ -255,25 +314,25 @@ export function Developers() {
         <p className="text-xs font-mono text-primary tracking-widest uppercase mb-2">Developer Portal</p>
         <h1 className="text-4xl font-medium tracking-tight mb-4">Build with the API</h1>
         <p className="text-muted-foreground font-mono text-sm mb-4">
-          Drop in unique-human verification with a single API key. Vendor liveness check, signed badges, no biometric data on your servers.
+          Drop in unique-human verification with a single API key. Persona-hosted liveness, RS256-signed badges, no biometric data on your servers.
         </p>
         <p className="text-xs font-mono text-muted-foreground mb-16">
           Read the <Link href="/trust" className="text-primary hover:underline" data-testid="link-developers-trust">threat model</Link> before integrating.
         </p>
 
-        {/* Production notice */}
         <div className="border border-primary/30 bg-primary/5 p-4 mb-12 font-mono text-xs text-foreground/80 leading-relaxed" data-testid="developers-production-notice">
-          <p className="text-primary mb-1 tracking-widest uppercase">API maturity notice</p>
+          <p className="text-primary mb-1 tracking-widest uppercase">Verification flow</p>
           <p>
-            The endpoints below are stable and live, but the verification semantics are currently
-            symbolic: there is no real liveness check, and the <code className="text-primary">humanBadge</code>{" "}
-            value is a hash, not a JWT. The production release ships vendor-backed liveness via Persona
-            and JWT badges signed against a public JWKS at <code className="text-primary">/.well-known/jwks.json</code>.
-            Field shapes won't break; semantics will tighten.
+            <code className="text-primary">/inquiries</code> opens a hosted Persona liveness check
+            (or an auto-approving mock when <code className="text-primary">PERSONA_API_KEY</code> /
+            <code className="text-primary"> PERSONA_TEMPLATE_ID</code> are unset). Once approved,
+            <code className="text-primary"> /register</code> mints an RS256 human badge signed
+            against the JWKS at <code className="text-primary">/.well-known/jwks.json</code>. Badges
+            verify offline; <code className="text-primary">/verify</code> is provided for
+            convenience and registry cross-checking.
           </p>
         </div>
 
-        {/* Threat model */}
         <section className="mb-20" data-testid="section-threat-model">
           <h2 className="text-2xl font-medium mb-2">Threat model — read this first</h2>
           <p className="text-sm text-muted-foreground mb-6 max-w-3xl">
@@ -305,7 +364,6 @@ export function Developers() {
           </p>
         </section>
 
-        {/* Auth, rate limits, idempotency, errors */}
         <section className="mb-20" data-testid="section-auth-limits">
           <h2 className="text-2xl font-medium mb-2">Authentication, limits, and errors</h2>
           <p className="text-sm text-muted-foreground mb-6 max-w-3xl">
@@ -332,8 +390,8 @@ Authorization: Bearer pk_live_…   # production`}</pre>
                 Token-bucket per project. Every response carries the current state.
               </p>
               <ul className="text-xs font-mono text-muted-foreground space-y-1 mb-3">
-                <li><span className="text-primary">—</span> Writes (<code>/register</code>, <code>/verify</code>): 60 req/min</li>
-                <li><span className="text-primary">—</span> Reads (<code>/stats</code>, <code>/nullifier/:hash</code>): 600 req/min</li>
+                <li><span className="text-primary">—</span> Writes (<code>/register</code>, <code>/verify</code>, <code>/inquiries</code>): 60 req/min</li>
+                <li><span className="text-primary">—</span> Reads (<code>/stats</code>, <code>/nullifier/:hash</code>, <code>/inquiries/:id</code>): 600 req/min</li>
               </ul>
               <pre className="text-xs font-mono text-foreground/80 bg-card p-3 border border-border whitespace-pre-wrap">{`X-RateLimit-Limit: 60
 X-RateLimit-Remaining: 59
@@ -347,12 +405,12 @@ Retry-After: 1   # only on 429`}</pre>
                 POST. Repeating the request within 24 hours replays the original byte-for-byte;
                 replaying with a different body returns 409.
               </p>
-              <pre className="text-xs font-mono text-foreground/80 bg-card p-3 border border-border whitespace-pre-wrap">{`POST /api/verify
+              <pre className="text-xs font-mono text-foreground/80 bg-card p-3 border border-border whitespace-pre-wrap">{`POST /api/register
 Authorization: Bearer pk_test_…
 Idempotency-Key: 9b2f…d1
 Content-Type: application/json
 
-{ "attestation_token": "…", … }`}</pre>
+{ "inquiryId": "…", "appContext": "…" }`}</pre>
             </div>
             <div className="p-6 md:border-t border-border">
               <p className="font-mono text-xs text-primary tracking-widest uppercase mb-3">Error envelope</p>
@@ -369,21 +427,21 @@ Content-Type: application/json
   }
 }`}</pre>
               <p className="text-xs font-mono text-muted-foreground mt-3">
-                Codes: <code>missing_authorization</code>, <code>invalid_api_key</code>,{" "}
-                <code>revoked_api_key</code>, <code>forbidden_origin</code>,{" "}
+                Codes include: <code>missing_authorization</code>, <code>invalid_api_key</code>,{" "}
                 <code>rate_limited</code>, <code>idempotency_conflict</code>,{" "}
-                <code>idempotency_in_progress</code>, <code>payload_too_large</code>,{" "}
-                <code>request_timeout</code>, <code>validation_error</code>,{" "}
-                <code>conflict</code>, <code>internal_error</code>.
+                <code>validation_error</code>, <code>conflict</code>,{" "}
+                <code>inquiry_not_found</code>, <code>inquiry_not_approved</code>,{" "}
+                <code>inquiry_consumed</code>, <code>invalid_badge</code>,{" "}
+                <code>expired_badge</code>, <code>vendor_unavailable</code>,{" "}
+                <code>internal_error</code>.
               </p>
             </div>
           </div>
         </section>
 
-        {/* SDK Code Snippets */}
         <section className="mb-20" data-testid="section-sdk">
           <h2 className="text-2xl font-medium mb-2">SDK Integration</h2>
-          <p className="text-sm text-muted-foreground mb-6">Full registration and verification flow. Copy, paste, adapt.</p>
+          <p className="text-sm text-muted-foreground mb-6">Full inquiry → register → verify flow. Copy, paste, adapt.</p>
           <div className="border border-border">
             <div className="flex border-b border-border">
               {(Object.keys(CODE_SNIPPETS) as Array<keyof typeof CODE_SNIPPETS>).map(l => (
@@ -403,10 +461,9 @@ Content-Type: application/json
           </div>
         </section>
 
-        {/* API Reference */}
         <section className="mb-20" data-testid="section-api-reference">
           <h2 className="text-2xl font-medium mb-2">API Reference</h2>
-          <p className="text-sm text-muted-foreground mb-8">All endpoints respond with <code className="text-primary font-mono">application/json</code>. Base URL: <code className="text-primary font-mono">/api</code></p>
+          <p className="text-sm text-muted-foreground mb-8">All endpoints respond with <code className="text-primary font-mono">application/json</code>. Base URL: <code className="text-primary font-mono">/api</code> (JWKS lives at the root <code className="text-primary font-mono">/.well-known/jwks.json</code>).</p>
           <div className="space-y-0 border border-border">
             {ENDPOINTS.map((ep, i) => (
               <div key={i} className={`p-6 ${i < ENDPOINTS.length - 1 ? 'border-b border-border' : ''}`} data-testid={`endpoint-card-${i}`}>
@@ -438,14 +495,12 @@ Content-Type: application/json
           </div>
         </section>
 
-        {/* Live Playground */}
         <section data-testid="section-playground">
           <h2 className="text-2xl font-medium mb-2">Live Playground</h2>
           <p className="text-sm text-muted-foreground mb-6">
-            Call the API in real time. Run the <a href="/demo" className="text-primary hover:underline">demo</a> first to get a valid nullifier for both tabs.
+            Call the API in real time. Run the <a href="/demo" className="text-primary hover:underline">demo</a> first to get a valid nullifier and human badge for both tabs.
           </p>
 
-          {/* Tab switcher */}
           <div className="border border-border mb-0">
             <div className="flex border-b border-border">
               <button
@@ -464,7 +519,6 @@ Content-Type: application/json
               </button>
             </div>
 
-            {/* GET /api/nullifier/:hash */}
             {playgroundTab === "nullifier" && (
               <div className="p-6 flex flex-col gap-4" data-testid="playground-nullifier">
                 <p className="font-mono text-xs text-muted-foreground">Paste a nullifier hash to check if it has been registered.</p>
@@ -494,76 +548,47 @@ Content-Type: application/json
 {JSON.stringify({ hash: nullifierData.hash, used: nullifierData.used, ...(nullifierData.registeredAt ? { registeredAt: nullifierData.registeredAt } : {}) }, null, 2)}
                     </pre>
                     <div className={`mt-3 inline-flex items-center gap-2 font-mono text-xs ${nullifierData.used ? 'text-primary' : 'text-muted-foreground'}`}>
-                      <div className={`w-2 h-2 ${nullifierData.used ? 'bg-primary' : 'bg-border'}`} />
-                      {nullifierData.used ? "Nullifier registered" : "Nullifier not found"}
+                      {nullifierData.used ? "Registered nullifier" : "Not yet registered"}
                     </div>
                   </div>
                 )}
               </div>
             )}
 
-            {/* POST /api/verify */}
             {playgroundTab === "verify" && (
               <div className="p-6 flex flex-col gap-4" data-testid="playground-verify">
-                <p className="font-mono text-xs text-muted-foreground">Submit an attestation token and nullifier to verify uniqueness. Returns a <code className="text-primary">humanBadge</code> token on success.</p>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="flex flex-col gap-1">
-                    <label className="font-mono text-xs text-muted-foreground">attestation_token <span className="text-muted-foreground/50">(wire field: <code>proof</code>)</span></label>
-                    <input
-                      type="text"
-                      className="border border-border bg-background px-3 py-2 font-mono text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary transition-colors"
-                      placeholder="opaque attestation token (any non-empty string)"
-                      value={verifyProof}
-                      onChange={e => setVerifyProof(e.target.value)}
-                      data-testid="input-verify-proof"
-                    />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="font-mono text-xs text-muted-foreground">nullifier</label>
-                    <input
-                      type="text"
-                      className="border border-border bg-background px-3 py-2 font-mono text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary transition-colors"
-                      placeholder="Paste nullifier from demo..."
-                      value={verifyNullifier}
-                      onChange={e => setVerifyNullifier(e.target.value)}
-                      data-testid="input-verify-nullifier"
-                    />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="font-mono text-xs text-muted-foreground">appContext</label>
-                    <input
-                      type="text"
-                      className="border border-border bg-background px-3 py-2 font-mono text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary transition-colors"
-                      placeholder="e.g. proof-of-personhood-demo"
-                      value={verifyContext}
-                      onChange={e => setVerifyContext(e.target.value)}
-                      data-testid="input-verify-context"
-                    />
-                  </div>
-                </div>
+                <p className="font-mono text-xs text-muted-foreground">
+                  Paste an RS256 human badge JWT and the appContext it was minted for.
+                </p>
+                <textarea
+                  className="border border-border bg-background px-4 py-3 font-mono text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary transition-colors min-h-[120px]"
+                  placeholder="eyJhbGciOiJSUzI1NiIs..."
+                  value={verifyBadge}
+                  onChange={e => setVerifyBadge(e.target.value)}
+                  data-testid="input-verify-badge"
+                />
+                <input
+                  type="text"
+                  className="border border-border bg-background px-4 py-3 font-mono text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary transition-colors"
+                  placeholder="appContext (e.g. proof-of-personhood-demo)"
+                  value={verifyContext}
+                  onChange={e => setVerifyContext(e.target.value)}
+                  data-testid="input-verify-context"
+                />
                 <button
-                  className="self-start border border-primary bg-primary text-primary-foreground px-6 py-2 font-mono text-xs hover:bg-primary/90 transition-colors disabled:opacity-50"
+                  className="border border-primary bg-primary text-primary-foreground px-6 py-3 font-mono text-xs hover:bg-primary/90 transition-colors disabled:opacity-50 self-start"
                   onClick={runVerify}
-                  disabled={!verifyProof.trim() || !verifyNullifier.trim() || !verifyContext.trim() || verifyMutation.isPending}
+                  disabled={!verifyBadge.trim() || !verifyContext.trim() || verifyMutation.isPending}
                   data-testid="button-run-verify"
                 >
-                  {verifyMutation.isPending ? "Verifying..." : "POST /api/verify"}
+                  {verifyMutation.isPending ? "..." : "RUN"}
                 </button>
-                {verifyResult !== null && (
-                  <div className={`border p-4 ${verifyResult.verified ? 'border-primary bg-primary/5' : 'border-border bg-card'}`} data-testid="playground-verify-result">
+                {verifyResult && (
+                  <div className="border border-border bg-card p-4" data-testid="playground-verify-result">
                     <p className="font-mono text-xs text-muted-foreground mb-2">RESPONSE 200</p>
                     <pre className="font-mono text-xs text-foreground/80 whitespace-pre-wrap leading-relaxed">
 {JSON.stringify(verifyResult, null, 2)}
                     </pre>
-                    <div className={`mt-3 inline-flex items-center gap-2 font-mono text-xs ${verifyResult.verified ? 'text-primary' : 'text-destructive'}`}>
-                      <div className={`w-2 h-2 ${verifyResult.verified ? 'bg-primary' : 'bg-destructive'}`} />
-                      {verifyResult.verified ? "Verification successful — human badge issued" : "Verification failed"}
-                    </div>
-                  </div>
-                )}
-                {verifyMutation.isError && (
-                  <div className="border border-destructive bg-destructive/10 p-4 font-mono text-xs text-destructive" data-testid="playground-verify-error">
-                    {(verifyMutation.error as { message?: string })?.message ?? "Verification request failed"}
                   </div>
                 )}
               </div>

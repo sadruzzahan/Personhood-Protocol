@@ -1,12 +1,13 @@
 import { Router, type IRouter } from "express";
-import { createHash, randomBytes } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
-import { db, commitmentsTable, verificationStatsTable } from "@workspace/db";
+import { eq, sql, and, isNull } from "drizzle-orm";
+import { z } from "zod/v4";
 import {
-  RegisterCommitmentBody,
-  RegisterCommitmentResponse,
-  VerifyProofBody,
-  VerifyProofResponse,
+  db,
+  commitmentsTable,
+  verificationStatsTable,
+  personaInquiriesTable,
+} from "@workspace/db";
+import {
   GetProtocolStatsResponse,
   CheckNullifierParams,
   CheckNullifierResponse,
@@ -16,9 +17,21 @@ import { requireApiKey } from "../middlewares/apiKeyAuth";
 import { rateLimit } from "../middlewares/rateLimit";
 import { idempotencyMiddleware } from "../middlewares/idempotency";
 import { requestLoggerMiddleware } from "../middlewares/requestLogger";
+import { deriveNullifier, deriveCommitment } from "../lib/nullifier";
+import { signHumanBadge, verifyHumanBadge } from "../lib/jwt";
+import { getVendor } from "../lib/vendor";
 
 const STATS_ROW_ID = 1;
 const serverStartedAt = Date.now();
+
+const RegisterBody = z.object({
+  inquiryId: z.string().min(8).max(128),
+  appContext: z.string().min(1).max(128),
+});
+const VerifyBody = z.object({
+  humanBadge: z.string().min(20).max(8192),
+  appContext: z.string().min(1).max(128),
+});
 
 async function incrementStats(field: "success" | "failure"): Promise<void> {
   if (field === "success") {
@@ -52,18 +65,8 @@ async function incrementStats(field: "success" | "failure"): Promise<void> {
   }
 }
 
-function sha256Hex(input: string): string {
-  return createHash("sha256").update(input).digest("hex");
-}
-
 const router: IRouter = Router();
 
-// Apply hardening per-route (not via router.use) so this router cannot
-// inadvertently intercept sibling routers (e.g. /internal/dashboard) that
-// use Clerk session auth instead of API-key auth.
-//
-// Order matters: requestLogger is first so auth-rejected requests are still
-// persisted to request_logs (with project_id = null).
 const publicWrite = [
   requestLoggerMiddleware,
   requireApiKey,
@@ -76,136 +79,239 @@ const publicRead = [
   rateLimit("read"),
 ] as const;
 
-router.post(
-  "/register",
-  ...publicWrite,
-  async (req, res, next) => {
-    try {
-      const parsed = RegisterCommitmentBody.safeParse(req.body);
-      if (!parsed.success) {
-        throw new ApiError({
-          code: "validation_error",
-          status: 422,
-          message: "Invalid biometric payload",
-          details: parsed.error.message,
-        });
+router.post("/register", ...publicWrite, async (req, res, next) => {
+  try {
+    if (!req.apiContext) throw new Error("missing apiContext");
+    const parsed = RegisterBody.safeParse(req.body);
+    if (!parsed.success) {
+      throw new ApiError({
+        code: "validation_error",
+        status: 422,
+        message: "Invalid register payload",
+        details: parsed.error.message,
+      });
+    }
+    const { inquiryId, appContext } = parsed.data;
+
+    // Look up the inquiry and confirm it belongs to the calling project.
+    const [inquiry] = await db
+      .select()
+      .from(personaInquiriesTable)
+      .where(eq(personaInquiriesTable.inquiryId, inquiryId))
+      .limit(1);
+    if (!inquiry || inquiry.projectId !== req.apiContext.project.id) {
+      throw new ApiError({
+        code: "inquiry_not_found",
+        status: 404,
+        message: "Unknown inquiry id for this project",
+      });
+    }
+
+    // For the mock vendor (and any case where the row hasn't caught up
+    // yet), poll the vendor inline so /register doesn't require the
+    // caller to first poll /inquiries.
+    let subjectId = inquiry.subjectId;
+    let status = inquiry.status;
+    if (status !== "approved" || !subjectId) {
+      try {
+        const vendor = getVendor();
+        const latest = await vendor.getInquiry(inquiryId);
+        if (latest.subjectId && latest.status === "approved") {
+          subjectId = latest.subjectId;
+          status = "approved";
+          await db
+            .update(personaInquiriesTable)
+            .set({
+              status,
+              subjectId,
+              updatedAt: new Date(),
+            })
+            .where(eq(personaInquiriesTable.inquiryId, inquiryId));
+        } else {
+          status = latest.status;
+        }
+      } catch {
+        // fall through to the not-approved error below
       }
+    }
+    if (status !== "approved" || !subjectId) {
+      throw new ApiError({
+        code: "inquiry_not_approved",
+        status: 409,
+        message:
+          "Inquiry is not in an approved state yet. Wait for the user to complete the hosted flow, or poll GET /inquiries/{id}.",
+      });
+    }
 
-      const { biometricData, appContext } = parsed.data;
-      const salt = randomBytes(16).toString("hex");
-      const commitmentHash = sha256Hex(`${biometricData}|${salt}`);
-      const nullifier = sha256Hex(`${biometricData}|${appContext}`);
+    // Single-use consume: atomically mark the inquiry consumed *only* if
+    // it is currently approved AND not already consumed. If zero rows are
+    // updated, another request beat us to it (or the inquiry was already
+    // exchanged) — surface that as an explicit `inquiry_consumed` error so
+    // callers know to start a new inquiry instead of replaying.
+    const consumedNow = new Date();
+    const consumeResult = await db
+      .update(personaInquiriesTable)
+      .set({ consumedAt: consumedNow, updatedAt: consumedNow })
+      .where(
+        and(
+          eq(personaInquiriesTable.inquiryId, inquiryId),
+          eq(personaInquiriesTable.status, "approved"),
+          isNull(personaInquiriesTable.consumedAt),
+        ),
+      )
+      .returning({ inquiryId: personaInquiriesTable.inquiryId });
+    if (consumeResult.length === 0) {
+      throw new ApiError({
+        code: "inquiry_consumed",
+        status: 409,
+        message:
+          "This inquiry has already been exchanged for a human badge. Start a new inquiry to register again.",
+      });
+    }
 
-      const existing = await db
-        .select({ nullifier: commitmentsTable.nullifier })
-        .from(commitmentsTable)
-        .where(eq(commitmentsTable.nullifier, nullifier))
-        .limit(1);
+    const nullifier = deriveNullifier(subjectId, appContext);
+    const { commitmentHash } = deriveCommitment(subjectId);
 
-      if (existing.length > 0) {
+    const existing = await db
+      .select({ nullifier: commitmentsTable.nullifier })
+      .from(commitmentsTable)
+      .where(eq(commitmentsTable.nullifier, nullifier))
+      .limit(1);
+    if (existing.length > 0) {
+      throw new ApiError({
+        code: "conflict",
+        status: 409,
+        message: "Nullifier already registered",
+        details:
+          "This human is already registered for this app context. Each person can register once per appContext.",
+      });
+    }
+
+    const registeredAt = new Date();
+    try {
+      await db.insert(commitmentsTable).values({
+        commitmentHash,
+        nullifier,
+        appContext,
+        registeredAt,
+      });
+    } catch (err: unknown) {
+      if (
+        typeof err === "object" &&
+        err !== null &&
+        "code" in err &&
+        (err as { code?: string }).code === "23505"
+      ) {
         throw new ApiError({
           code: "conflict",
           status: 409,
           message: "Nullifier already registered",
-          details:
-            "A commitment with this biometric/app-context pair already exists. Each human can register once per app context.",
         });
       }
-
-      const registeredAt = new Date();
-      try {
-        await db.insert(commitmentsTable).values({
-          commitmentHash,
-          nullifier,
-          appContext,
-          registeredAt,
-        });
-      } catch (err: unknown) {
-        if (
-          typeof err === "object" &&
-          err !== null &&
-          "code" in err &&
-          (err as { code?: string }).code === "23505"
-        ) {
-          throw new ApiError({
-            code: "conflict",
-            status: 409,
-            message: "Nullifier already registered",
-          });
-        }
-        throw err;
-      }
-
-      const proofGenerationMs = 2000 + Math.floor(Math.random() * 1200);
-      const response = RegisterCommitmentResponse.parse({
-        commitmentHash,
-        nullifier,
-        registeredAt,
-        proofGenerationMs,
-      });
-      res.json(response);
-    } catch (err) {
-      next(err);
+      throw err;
     }
-  },
-);
 
-router.post(
-  "/verify",
-  ...publicWrite,
-  async (req, res, next) => {
+    const { token, expiresAt } = await signHumanBadge({
+      commitmentHash,
+      audience: req.apiContext.project.id,
+      nullifier,
+      appContext,
+    });
+
+    res.json({
+      commitmentHash,
+      nullifier,
+      humanBadge: token,
+      registeredAt: registeredAt.toISOString(),
+      expiresAt: expiresAt.toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/verify", ...publicWrite, async (req, res, next) => {
+  try {
+    if (!req.apiContext) throw new Error("missing apiContext");
+    const parsed = VerifyBody.safeParse(req.body);
+    if (!parsed.success) {
+      throw new ApiError({
+        code: "validation_error",
+        status: 422,
+        message: "Invalid verify payload",
+        details: parsed.error.message,
+      });
+    }
+    const { humanBadge, appContext } = parsed.data;
+    const now = new Date();
+
+    let claims;
     try {
-      const parsed = VerifyProofBody.safeParse(req.body);
-      if (!parsed.success) {
-        throw new ApiError({
-          code: "validation_error",
-          status: 422,
-          message: "Invalid proof payload",
-          details: parsed.error.message,
-        });
-      }
-
-      const { proof, nullifier, appContext } = parsed.data;
-      const found = await db
-        .select()
-        .from(commitmentsTable)
-        .where(eq(commitmentsTable.nullifier, nullifier))
-        .limit(1);
-      const record = found[0];
-      const now = new Date();
-
-      const validProofShape = proof.length >= 16;
-      const contextMatches = record?.appContext === appContext;
-
-      if (!record || !validProofShape || !contextMatches) {
-        await incrementStats("failure");
-        const response = VerifyProofResponse.parse({
-          verified: false,
-          verifiedAt: now,
-          message: !record
-            ? "Nullifier not registered"
-            : !contextMatches
-              ? "App context does not match the registered commitment"
-              : "Proof failed cryptographic verification",
-        });
-        res.json(response);
-        return;
-      }
-
-      await incrementStats("success");
-      const humanBadge = sha256Hex(`badge|${nullifier}|${now.toISOString()}`);
-      const response = VerifyProofResponse.parse({
-        verified: true,
-        humanBadge,
-        verifiedAt: now,
-        message: "Proof of personhood verified successfully",
-      });
-      res.json(response);
+      claims = await verifyHumanBadge(humanBadge);
     } catch (err) {
-      next(err);
+      await incrementStats("failure");
+      const msg = err instanceof Error ? err.message : String(err);
+      const expired = /exp/i.test(msg) && /expired/i.test(msg);
+      res.json({
+        verified: false,
+        verifiedAt: now.toISOString(),
+        message: expired
+          ? "Human badge has expired"
+          : "Human badge signature did not verify",
+      });
+      return;
     }
-  },
-);
+
+    // Audience check: the badge must have been issued *to* this project.
+    if (claims.aud !== req.apiContext.project.id) {
+      await incrementStats("failure");
+      res.json({
+        verified: false,
+        verifiedAt: now.toISOString(),
+        message: "Badge audience does not match this project",
+      });
+      return;
+    }
+    // App-context check: caller must declare the same context the badge
+    // was minted for.
+    if (claims.app_context !== appContext) {
+      await incrementStats("failure");
+      res.json({
+        verified: false,
+        verifiedAt: now.toISOString(),
+        message: "App context does not match the badge",
+      });
+      return;
+    }
+
+    // Cross-check that the nullifier really exists in the registry.
+    const [record] = await db
+      .select()
+      .from(commitmentsTable)
+      .where(eq(commitmentsTable.nullifier, claims.nullifier))
+      .limit(1);
+    if (!record || record.appContext !== appContext) {
+      await incrementStats("failure");
+      res.json({
+        verified: false,
+        verifiedAt: now.toISOString(),
+        message: "Nullifier is not registered for this app context",
+      });
+      return;
+    }
+
+    await incrementStats("success");
+    res.json({
+      verified: true,
+      nullifier: claims.nullifier,
+      commitmentHash: claims.sub,
+      verifiedAt: now.toISOString(),
+      message: "Proof of personhood verified successfully",
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 
 router.get("/stats", ...publicRead, async (_req, res, next) => {
   try {

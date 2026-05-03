@@ -16,6 +16,7 @@ import { ApiError } from "./lib/errors";
 import { timeoutMiddleware } from "./middlewares/timeout";
 import { startIdempotencyCleanup } from "./middlewares/idempotency";
 import router from "./routes";
+import jwksRouter from "./routes/jwks";
 import { logger } from "./lib/logger";
 
 const app: Express = express();
@@ -67,7 +68,19 @@ app.use(cors({ credentials: false, origin: true }));
 
 // Strict body size limit. The protocol payloads are tiny; 32 KB leaves a
 // generous margin for nested JSON without giving attackers a memory lever.
-app.use(express.json({ limit: "32kb" }));
+//
+// `verify` stashes the exact raw bytes on req.rawBody so the Persona
+// webhook handler can compute HMAC-SHA256 over the canonical body. Without
+// this, body-parser would consume the stream and the webhook handler would
+// see only the parsed object (HMAC over a JS object string is meaningless).
+app.use(
+  express.json({
+    limit: "32kb",
+    verify: (req, _res, buf) => {
+      (req as express.Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf);
+    },
+  }),
+);
 app.use(express.urlencoded({ extended: true, limit: "32kb" }));
 
 // Server-side request timeout. Returns a typed 408 envelope.
@@ -81,6 +94,9 @@ app.use(
     ),
   })),
 );
+
+// JWKS lives at the root, not under /api, per RFC 8615.
+app.use(jwksRouter);
 
 app.use("/api", router);
 

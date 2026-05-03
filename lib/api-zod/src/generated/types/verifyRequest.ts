@@ -19,7 +19,8 @@ machine-readable `error.code` and the `request_id` for log correlation.
  */
 
 export interface VerifyRequest {
-  proof: string;
-  nullifier: string;
+  /** The JWT returned by /register. */
+  humanBadge: string;
+  /** Must match the app_context claim in the badge. */
   appContext: string;
 }

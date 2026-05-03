@@ -12,7 +12,14 @@ export type ApiErrorCode =
   | "not_found"
   | "conflict"
   | "internal_error"
-  | "service_unavailable";
+  | "service_unavailable"
+  | "inquiry_not_found"
+  | "inquiry_not_approved"
+  | "inquiry_consumed"
+  | "invalid_badge"
+  | "expired_badge"
+  | "vendor_unavailable"
+  | "webhook_signature_invalid";
 
 export class ApiError extends Error {
   readonly code: ApiErrorCode;

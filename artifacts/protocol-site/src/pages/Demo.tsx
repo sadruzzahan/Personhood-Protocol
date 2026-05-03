@@ -1,14 +1,17 @@
 import { useState, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
-import { useRegisterCommitment, useVerifyProof, useHealthCheck, getHealthCheckQueryKey } from "@workspace/api-client-react";
+import {
+  useCreateInquiry,
+  useRegisterCommitment,
+  useVerifyProof,
+  useHealthCheck,
+  getHealthCheckQueryKey,
+  getInquiry,
+} from "@workspace/api-client-react";
 
 type Step = 0 | 1 | 2 | 3 | 4;
 
-function randomHex(len: number) {
-  const arr = new Uint8Array(len);
-  crypto.getRandomValues(arr);
-  return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
-}
+const APP_CONTEXT = "proof-of-personhood-demo";
 
 function FaceOverlay({ scanning, confirmed }: { scanning: boolean; confirmed: boolean }) {
   return (
@@ -70,19 +73,34 @@ function StepIndicator({ current }: { current: Step }) {
   );
 }
 
+interface CommitmentResult {
+  commitmentHash: string;
+  nullifier: string;
+  humanBadge: string;
+  expiresAt: string;
+}
+
+interface BadgeResult {
+  message: string;
+  verified: boolean;
+}
+
 export function Demo() {
   const [step, setStep] = useState<Step>(0);
   const [scanning, setScanning] = useState(false);
   const [livenessConfirmed, setLivenessConfirmed] = useState(false);
-  const [commitmentResult, setCommitmentResult] = useState<{ commitmentHash: string; nullifier: string; proofGenerationMs: number } | null>(null);
+  const [inquiryId, setInquiryId] = useState<string | null>(null);
+  const [vendor, setVendor] = useState<"mock" | "persona">("mock");
+  const [hostedUrl, setHostedUrl] = useState<string | null>(null);
+  const [commitmentResult, setCommitmentResult] = useState<CommitmentResult | null>(null);
   const [hashProgress, setHashProgress] = useState(0);
   const [proofProgress, setProofProgress] = useState(0);
-  const [attestationToken, setAttestationToken] = useState("");
-  const [badgeResult, setBadgeResult] = useState<{ humanBadge: string; message: string } | null>(null);
+  const [badgeResult, setBadgeResult] = useState<BadgeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const biometricData = useRef(randomHex(32));
+  const referenceId = useRef(`demo-${Math.random().toString(36).slice(2, 10)}`);
 
   const [, setLocation] = useLocation();
+  const createInquiryMutation = useCreateInquiry();
   const registerMutation = useRegisterCommitment();
   const verifyMutation = useVerifyProof();
   const { refetch: refetchHealth } = useHealthCheck({ query: { enabled: false, queryKey: getHealthCheckQueryKey() } });
@@ -91,28 +109,86 @@ export function Demo() {
     setStep(0);
     setScanning(false);
     setLivenessConfirmed(false);
+    setInquiryId(null);
+    setVendor("mock");
+    setHostedUrl(null);
     setCommitmentResult(null);
     setHashProgress(0);
     setProofProgress(0);
-    setAttestationToken("");
     setBadgeResult(null);
     setError(null);
-    biometricData.current = randomHex(32);
+    referenceId.current = `demo-${Math.random().toString(36).slice(2, 10)}`;
+    createInquiryMutation.reset();
     registerMutation.reset();
     verifyMutation.reset();
   }
 
+  // Step 1: Create the inquiry, then poll the vendor until it auto-approves
+  // (the mock vendor approves after ~1.5s; Persona returns approved as soon
+  // as the user finishes the hosted flow). We poll /inquiries/{id} every
+  // 700ms while step === 1.
   function startLiveness() {
     setStep(1);
     setScanning(true);
     refetchHealth().catch(() => { /* health probe is best-effort */ });
-    setTimeout(() => {
-      setLivenessConfirmed(true);
-      setScanning(false);
-    }, 2800);
+    createInquiryMutation.mutate(
+      { data: { referenceId: referenceId.current } },
+      {
+        onSuccess: (result) => {
+          setInquiryId(result.inquiryId);
+          setVendor(result.vendor);
+          setHostedUrl(result.hostedUrl);
+          // Real Persona inquiries require the user to complete a hosted
+          // flow. Open it in a new tab so the polling loop in this tab can
+          // wait for the webhook to flip status to "approved".
+          if (result.vendor === "persona" && result.hostedUrl) {
+            window.open(result.hostedUrl, "_blank", "noopener,noreferrer");
+          }
+        },
+        onError: (err: unknown) => {
+          const msg = (err as { message?: string })?.message ?? "Failed to start inquiry";
+          setError(msg);
+        },
+      },
+    );
   }
 
+  // Poll inquiry status. Stops as soon as we see status==="approved", which
+  // unlocks the "Register Nullifier" button. We avoid the generated react-
+  // query hook here because we need an authenticated bearer header — the
+  // custom-fetch already handles that for mutations and the URL helper.
+  useEffect(() => {
+    if (step !== 1 || !inquiryId) return;
+    let cancelled = false;
+    let attempts = 0;
+    async function poll() {
+      while (!cancelled && attempts < 40) {
+        attempts++;
+        try {
+          const res = await getInquiry(inquiryId!);
+          if (cancelled) return;
+          if (res.status === "approved") {
+            setLivenessConfirmed(true);
+            setScanning(false);
+            return;
+          }
+        } catch {
+          // Vendor may be eventually-consistent; keep polling for a bit.
+        }
+        await new Promise((r) => setTimeout(r, 700));
+      }
+      if (!cancelled) {
+        setError("Inquiry never reached approved state — try again.");
+      }
+    }
+    poll();
+    return () => {
+      cancelled = true;
+    };
+  }, [step, inquiryId]);
+
   function startCommitment() {
+    if (!inquiryId) return;
     setStep(2);
     setHashProgress(0);
     const start = Date.now();
@@ -125,17 +201,22 @@ export function Demo() {
     requestAnimationFrame(tick);
 
     registerMutation.mutate(
-      { data: { biometricData: biometricData.current, deviceTier: "secure_enclave", appContext: "proof-of-personhood-demo" } },
+      { data: { inquiryId, appContext: APP_CONTEXT } },
       {
         onSuccess: (result) => {
-          setCommitmentResult({ commitmentHash: result.commitmentHash, nullifier: result.nullifier, proofGenerationMs: result.proofGenerationMs });
+          setCommitmentResult({
+            commitmentHash: result.commitmentHash,
+            nullifier: result.nullifier,
+            humanBadge: result.humanBadge,
+            expiresAt: typeof result.expiresAt === "string" ? result.expiresAt : new Date(result.expiresAt as unknown as string).toISOString(),
+          });
           setHashProgress(1);
         },
         onError: (err: unknown) => {
           const msg = (err as { message?: string })?.message ?? "Registration failed";
           setError(msg);
         },
-      }
+      },
     );
   }
 
@@ -143,7 +224,7 @@ export function Demo() {
     if (!commitmentResult) return;
     setStep(3);
     setProofProgress(0);
-    const duration = commitmentResult.proofGenerationMs;
+    const duration = 1500;
     const start = Date.now();
     const tick = () => {
       const p = Math.min((Date.now() - start) / duration, 1);
@@ -152,22 +233,22 @@ export function Demo() {
     };
     requestAnimationFrame(tick);
 
-    const proof = `att_${randomHex(24)}`;
-    setAttestationToken(proof);
-
     setTimeout(() => {
       verifyMutation.mutate(
-        { data: { proof, nullifier: commitmentResult.nullifier, appContext: "proof-of-personhood-demo" } },
+        { data: { humanBadge: commitmentResult.humanBadge, appContext: APP_CONTEXT } },
         {
           onSuccess: (result) => {
-            setBadgeResult({ humanBadge: result.humanBadge ?? "", message: result.message });
+            setBadgeResult({
+              message: result.message,
+              verified: result.verified,
+            });
             setStep(4);
           },
           onError: (err: unknown) => {
             const msg = (err as { message?: string })?.message ?? "Verification failed";
             setError(msg);
           },
-        }
+        },
       );
     }, duration);
   }
@@ -175,19 +256,20 @@ export function Demo() {
   return (
     <div className="flex flex-col min-h-screen">
       <div className="flex-1 max-w-3xl mx-auto w-full px-4 py-16">
-        <p className="text-xs font-mono text-primary tracking-widest uppercase mb-2">Simulated Walkthrough</p>
+        <p className="text-xs font-mono text-primary tracking-widest uppercase mb-2">End-to-end walkthrough</p>
         <h1 className="text-4xl font-medium tracking-tight mb-4">How a verification looks end-to-end</h1>
         <p className="text-muted-foreground font-mono text-sm mb-6">
-          A guided walkthrough of the verification flow. Each step calls the live API, but the
-          biometric capture is simulated locally — no camera access, no real liveness check.
+          Each step calls the live API. The hosted liveness check is provided by Persona in
+          production; this demo uses a self-completing mock vendor so the full flow runs without
+          requiring you to leave the page.
         </p>
 
-        <div className="border border-primary/40 bg-primary/5 p-4 mb-12 font-mono text-xs text-foreground/80 leading-relaxed" data-testid="demo-simulation-banner">
-          <p className="text-primary mb-1 tracking-widest uppercase">Simulation only</p>
+        <div className="border border-primary/40 bg-primary/5 p-4 mb-12 font-mono text-xs text-foreground/80 leading-relaxed" data-testid="demo-vendor-banner">
+          <p className="text-primary mb-1 tracking-widest uppercase">Verification vendor: {vendor}</p>
           <p>
-            Production uses a hosted Persona liveness check, an HMAC-derived per-app nullifier, and a
-            JWT human-badge signed against our public JWKS. That path ships in a coming release; this
-            page exists to demonstrate the shape of the flow today.
+            {vendor === "persona"
+              ? "Production Persona inquiry — open the hosted URL to complete the liveness check."
+              : "Mock vendor active — auto-approves locally so the demo can finish without external credentials. Set PERSONA_API_KEY + PERSONA_TEMPLATE_ID to switch to the real Persona flow."}
           </p>
         </div>
 
@@ -200,7 +282,6 @@ export function Demo() {
           </div>
         )}
 
-        {/* Step 0: Ready to start */}
         {step === 0 && !error && (
           <div className="border border-border bg-card p-10 flex flex-col items-center gap-6 text-center" data-testid="step-start">
             <div className="w-16 h-16 border border-border flex items-center justify-center">
@@ -211,10 +292,10 @@ export function Demo() {
             </div>
             <div>
               <h2 className="text-xl font-medium mb-2">Ready to walk through</h2>
-              <p className="text-sm text-muted-foreground max-w-sm">No camera access. A random subject payload stands in for what the production liveness vendor would return.</p>
+              <p className="text-sm text-muted-foreground max-w-sm">A reference id stands in for your end-user identifier. The vendor never sees your project's API key.</p>
             </div>
             <div className="font-mono text-xs text-muted-foreground bg-background border border-border px-4 py-2 w-full text-left">
-              Simulated subject: <span className="text-primary">{biometricData.current.slice(0, 16)}...</span>
+              Reference: <span className="text-primary">{referenceId.current}</span>
             </div>
             <button
               className="w-full bg-primary text-primary-foreground py-3 font-medium text-sm hover:bg-primary/90 transition-colors"
@@ -226,21 +307,35 @@ export function Demo() {
           </div>
         )}
 
-        {/* Step 1: Liveness */}
         {step === 1 && !error && (
           <div className="border border-border bg-card p-10 flex flex-col items-center gap-6" data-testid="step-liveness">
             <div className="w-full text-center">
-              <h2 className="text-xl font-medium mb-1">Liveness Check (simulated)</h2>
-              <p className="text-sm text-muted-foreground">In production, the user completes a hosted liveness check from our identity-verification subprocessor.</p>
+              <h2 className="text-xl font-medium mb-1">Hosted Liveness Check</h2>
+              <p className="text-sm text-muted-foreground">
+                {vendor === "persona"
+                  ? "User completes Persona's hosted flow. Webhook + polling update the inquiry status."
+                  : "Mock vendor auto-approves after a short delay so the demo runs end-to-end."}
+              </p>
             </div>
             <FaceOverlay scanning={scanning} confirmed={livenessConfirmed} />
             <div className="w-full font-mono text-xs text-center">
               {livenessConfirmed ? (
-                <span className="text-primary">Simulated liveness pass — proceeding</span>
+                <span className="text-primary">Inquiry approved — proceeding</span>
               ) : (
-                <span className="text-muted-foreground animate-pulse">Pretending to analyze face geometry and depth signals...</span>
+                <span className="text-muted-foreground animate-pulse">Polling /api/inquiries/{inquiryId?.slice(-8) ?? "…"} until status=approved...</span>
               )}
             </div>
+            {vendor === "persona" && hostedUrl && !livenessConfirmed && (
+              <a
+                href={hostedUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full text-center border border-primary text-primary py-3 font-mono text-sm hover:bg-primary/10 transition-colors"
+                data-testid="link-hosted-flow"
+              >
+                Open hosted flow ↗
+              </a>
+            )}
             {livenessConfirmed && (
               <button
                 className="w-full bg-primary text-primary-foreground py-3 font-medium text-sm hover:bg-primary/90 transition-colors"
@@ -253,12 +348,11 @@ export function Demo() {
           </div>
         )}
 
-        {/* Step 2: Commitment */}
         {step === 2 && !error && (
           <div className="border border-border bg-card p-10 flex flex-col gap-6" data-testid="step-commitment">
             <div>
               <h2 className="text-xl font-medium mb-1">Nullifier registration</h2>
-              <p className="text-sm text-muted-foreground font-mono">Computing C = HMAC(master_key, subject) and N = HMAC(master_key, subject || appContext)...</p>
+              <p className="text-sm text-muted-foreground font-mono">Server derives N = HMAC(master, subject || appContext) and C = HMAC(master, subject || salt), then signs an RS256 human badge.</p>
             </div>
             <div className="h-1 bg-border w-full">
               <div className="h-1 bg-primary transition-all duration-100" style={{ width: `${Math.round(hashProgress * 100)}%` }} />
@@ -271,15 +365,12 @@ export function Demo() {
               <div className="flex flex-col gap-3" data-testid="commitment-results">
                 <HashDisplay hash={commitmentResult.commitmentHash} label="COMMITMENT HASH (server registry)" />
                 <HashDisplay hash={commitmentResult.nullifier} label="NULLIFIER (app-scoped)" />
-                <div className="font-mono text-xs text-muted-foreground border border-border bg-background p-3">
-                  Server processing time: <span className="text-primary">{commitmentResult.proofGenerationMs}ms</span>
-                </div>
                 <button
                   className="w-full bg-primary text-primary-foreground py-3 font-medium text-sm hover:bg-primary/90 transition-colors"
                   onClick={startProof}
                   data-testid="button-proceed-proof"
                 >
-                  Issue Attestation
+                  Verify Human Badge
                 </button>
               </div>
             )}
@@ -289,31 +380,29 @@ export function Demo() {
           </div>
         )}
 
-        {/* Step 3: Attestation issuance */}
-        {step === 3 && !error && (
+        {step === 3 && commitmentResult && !error && (
           <div className="border border-border bg-card p-10 flex flex-col gap-6" data-testid="step-proof">
             <div>
-              <h2 className="text-xl font-medium mb-1">Issuing attestation token</h2>
-              <p className="text-sm text-muted-foreground font-mono">Today: server mints an opaque token bound to the registered nullifier. Production: the server signs a JWT attestation_token with the RSA key published at /.well-known/jwks.json.</p>
+              <h2 className="text-xl font-medium mb-1">Verifying RS256 human badge</h2>
+              <p className="text-sm text-muted-foreground font-mono">Calling /api/verify with the JWT we just minted. The server checks the signature against the JWKS, validates the audience + app_context claims, and cross-checks the nullifier in the commitment registry.</p>
             </div>
 
             <div className="border border-border bg-background p-4 font-mono text-xs space-y-1">
-              <p className="text-muted-foreground">issuer: <span className="text-primary">pop-protocol-api</span></p>
-              <p className="text-muted-foreground">audience: <span className="text-primary">app:proof-of-personhood-demo</span></p>
-              <p className="text-muted-foreground">claims: <span className="text-primary">nullifier, sub, iat, exp</span></p>
-              <p className="text-muted-foreground">attestation_token: <span className="text-primary">{attestationToken.slice(0, 20)}...</span></p>
+              <p className="text-muted-foreground">alg: <span className="text-primary">RS256</span></p>
+              <p className="text-muted-foreground">jwks: <span className="text-primary">/.well-known/jwks.json</span></p>
+              <p className="text-muted-foreground">app_context: <span className="text-primary">{APP_CONTEXT}</span></p>
+              <p className="text-muted-foreground">expires: <span className="text-primary">{new Date(commitmentResult.expiresAt).toLocaleString()}</span></p>
             </div>
 
             <div className="h-1 bg-border w-full">
               <div className="h-1 bg-primary transition-all duration-100" style={{ width: `${Math.round(proofProgress * 100)}%` }} />
             </div>
             <div className="font-mono text-xs text-muted-foreground animate-pulse">
-              {Math.round(proofProgress * 100)}% — server is binding the token to the nullifier...
+              {Math.round(proofProgress * 100)}% — checking signature, audience, expiry, nullifier...
             </div>
           </div>
         )}
 
-        {/* Step 4: Badge Revealed */}
         {step === 4 && badgeResult && !error && (
           <div className="border border-primary bg-primary/5 p-10 flex flex-col items-center gap-6 text-center" data-testid="step-badge">
             <div className="w-20 h-20 border border-primary flex items-center justify-center">
@@ -322,17 +411,17 @@ export function Demo() {
               </svg>
             </div>
             <div>
-              <h2 className="text-2xl font-medium mb-2 text-primary">Verified Unique Human</h2>
+              <h2 className="text-2xl font-medium mb-2 text-primary">{badgeResult.verified ? "Verified Unique Human" : "Verification Failed"}</h2>
               <p className="text-sm text-muted-foreground max-w-sm">{badgeResult.message}</p>
             </div>
-            {badgeResult.humanBadge && (
+            {commitmentResult && badgeResult.verified && (
               <div className="w-full border border-primary/30 bg-background p-4 text-left" data-testid="human-badge">
-                <p className="font-mono text-xs text-primary mb-1">HUMAN BADGE TOKEN</p>
-                <p className="font-mono text-xs text-muted-foreground break-all">{badgeResult.humanBadge}</p>
+                <p className="font-mono text-xs text-primary mb-1">HUMAN BADGE JWT (RS256)</p>
+                <p className="font-mono text-xs text-muted-foreground break-all">{commitmentResult.humanBadge}</p>
               </div>
             )}
             <div className="text-xs font-mono text-muted-foreground">
-              This token can be stored by any application to mark your account as a verified unique human.
+              Anyone can verify this badge offline by fetching <span className="text-primary">/.well-known/jwks.json</span>.
             </div>
             {commitmentResult && (
               <button

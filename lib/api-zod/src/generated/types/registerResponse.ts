@@ -19,8 +19,13 @@ machine-readable `error.code` and the `request_id` for log correlation.
  */
 
 export interface RegisterResponse {
+  /** HMAC-SHA256 commitment id. Cannot be reversed to recover the subject. */
   commitmentHash: string;
+  /** HMAC-SHA256 nullifier scoped to (subject, appContext). */
   nullifier: string;
+  /** RS256-signed JWT. Verify with JWKS at /.well-known/jwks.json. */
+  humanBadge: string;
   registeredAt: Date;
-  proofGenerationMs: number;
+  /** When the issued human badge expires (24h). */
+  expiresAt: Date;
 }

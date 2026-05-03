@@ -39,4 +39,11 @@ export const ErrorEnvelopeErrorCode = {
   conflict: "conflict",
   internal_error: "internal_error",
   service_unavailable: "service_unavailable",
+  inquiry_not_found: "inquiry_not_found",
+  inquiry_not_approved: "inquiry_not_approved",
+  inquiry_consumed: "inquiry_consumed",
+  invalid_badge: "invalid_badge",
+  expired_badge: "expired_badge",
+  vendor_unavailable: "vendor_unavailable",
+  webhook_signature_invalid: "webhook_signature_invalid",
 } as const;

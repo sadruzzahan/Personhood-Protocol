@@ -20,7 +20,10 @@ machine-readable `error.code` and the `request_id` for log correlation.
 
 export interface VerifyResponse {
   verified: boolean;
-  humanBadge?: string;
+  /** Echoed from the badge claims; absent on failure. */
+  nullifier?: string;
+  /** Echoed from the badge subject; absent on failure. */
+  commitmentHash?: string;
   verifiedAt: Date;
   message: string;
 }

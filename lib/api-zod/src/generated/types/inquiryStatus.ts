@@ -17,13 +17,11 @@ machine-readable `error.code` and the `request_id` for log correlation.
 
  * OpenAPI spec version: 0.1.0
  */
+import type { InquiryStatusDecision } from "./inquiryStatusDecision";
+import type { InquiryStatusStatus } from "./inquiryStatusStatus";
 
-export interface RegisterRequest {
-  /** Id returned by POST /inquiries after the user completes the hosted flow. */
+export interface InquiryStatus {
   inquiryId: string;
-  /**
-   * Application context. Same (subject, appContext) ⇒ same nullifier; different appContexts are uncorrelated.
-   * @maxLength 128
-   */
-  appContext: string;
+  status: InquiryStatusStatus;
+  decision?: InquiryStatusDecision;
 }

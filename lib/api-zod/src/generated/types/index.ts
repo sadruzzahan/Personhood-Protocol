@@ -19,12 +19,19 @@ machine-readable `error.code` and the `request_id` for log correlation.
  */
 
 export * from "./conflictResponse";
+export * from "./createInquiryRequest";
 export * from "./errorEnvelope";
 export * from "./errorEnvelopeError";
 export * from "./errorEnvelopeErrorCode";
 export * from "./forbiddenResponse";
 export * from "./healthStatus";
 export * from "./idempotencyKeyParameter";
+export * from "./inquirySession";
+export * from "./inquirySessionStatus";
+export * from "./inquirySessionVendor";
+export * from "./inquiryStatus";
+export * from "./inquiryStatusDecision";
+export * from "./inquiryStatusStatus";
 export * from "./nullifierStatus";
 export * from "./payloadTooLargeResponse";
 export * from "./protocolStats";
@@ -33,7 +40,6 @@ export * from "./readinessStatus";
 export * from "./readinessStatusChecks";
 export * from "./readinessStatusStatus";
 export * from "./registerRequest";
-export * from "./registerRequestDeviceTier";
 export * from "./registerResponse";
 export * from "./requestTimeoutResponse";
 export * from "./unauthorizedResponse";

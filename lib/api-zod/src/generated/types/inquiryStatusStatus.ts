@@ -18,12 +18,14 @@ machine-readable `error.code` and the `request_id` for log correlation.
  * OpenAPI spec version: 0.1.0
  */
 
-export interface RegisterRequest {
-  /** Id returned by POST /inquiries after the user completes the hosted flow. */
-  inquiryId: string;
-  /**
-   * Application context. Same (subject, appContext) ⇒ same nullifier; different appContexts are uncorrelated.
-   * @maxLength 128
-   */
-  appContext: string;
-}
+export type InquiryStatusStatus =
+  (typeof InquiryStatusStatus)[keyof typeof InquiryStatusStatus];
+
+export const InquiryStatusStatus = {
+  pending: "pending",
+  completed: "completed",
+  approved: "approved",
+  declined: "declined",
+  expired: "expired",
+  failed: "failed",
+} as const;

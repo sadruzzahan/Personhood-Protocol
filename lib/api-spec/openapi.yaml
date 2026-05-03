@@ -73,12 +73,82 @@ paths:
               schema:
                 $ref: "#/components/schemas/ReadinessStatus"
 
+  /inquiries:
+    post:
+      operationId: createInquiry
+      tags: [protocol]
+      summary: Start a hosted liveness inquiry
+      description: |
+        Creates a hosted identity-verification inquiry with the configured
+        vendor (Persona by default; a "mock" vendor activates automatically
+        when Persona credentials are absent so the demo flow keeps working).
+        Returns a `hostedUrl` that you redirect the end user to.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateInquiryRequest"
+      responses:
+        "200":
+          description: Inquiry created
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/XRequestId" }
+            X-RateLimit-Limit: { $ref: "#/components/headers/XRateLimitLimit" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/XRateLimitRemaining" }
+            X-RateLimit-Reset: { $ref: "#/components/headers/XRateLimitReset" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InquirySession"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502":
+          description: Identity vendor is unreachable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /inquiries/{inquiryId}:
+    get:
+      operationId: getInquiry
+      tags: [protocol]
+      summary: Poll inquiry status
+      description: Returns the current status of an inquiry. Use this to wait until the user has completed the hosted flow before calling /register.
+      parameters:
+        - name: inquiryId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Inquiry status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InquiryStatus"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Inquiry not found for this project.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
   /register:
     post:
       operationId: registerCommitment
       tags: [protocol]
-      summary: Register a biometric commitment
-      description: Accepts a simulated biometric payload, generates a cryptographic commitment hash and nullifier, stores them, and returns the commitment details.
+      summary: Register a verified human commitment
+      description: |
+        Mints a Proof-of-Personhood commitment from a completed inquiry.
+        The server derives a per-app nullifier (HMAC-SHA256) and signs an
+        RS256 human badge JWT. Verifiers can validate the badge offline
+        using the JWKS at `/.well-known/jwks.json`.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -115,8 +185,12 @@ paths:
     post:
       operationId: verifyProof
       tags: [protocol]
-      summary: Verify an attestation token
-      description: Verifies a previously-issued attestation token against the nullifier registry. Returns a human-badge token on success.
+      summary: Verify a human-badge JWT
+      description: |
+        Verifies an RS256-signed human badge JWT. Checks the signature
+        against the JWKS, the issuer, the audience (your project id), the
+        expiration, and the app_context claim. Cross-checks the embedded
+        nullifier against the on-chain-style commitment registry.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -299,72 +373,106 @@ components:
       required:
         - status
 
+    CreateInquiryRequest:
+      type: object
+      properties:
+        referenceId:
+          type: string
+          description: Optional opaque id you can use to correlate this inquiry back to your own user record.
+          maxLength: 128
+        redirectUri:
+          type: string
+          format: uri
+          description: Where the hosted flow should send the user after completion.
+          maxLength: 512
+
+    InquirySession:
+      type: object
+      properties:
+        inquiryId: { type: string }
+        hostedUrl:
+          type: string
+          description: Open this URL in a browser to start the hosted liveness check.
+        vendor:
+          type: string
+          enum: [mock, persona]
+        status:
+          type: string
+          enum: [pending]
+      required: [inquiryId, hostedUrl, vendor, status]
+
+    InquiryStatus:
+      type: object
+      properties:
+        inquiryId: { type: string }
+        status:
+          type: string
+          enum: [pending, completed, approved, declined, expired, failed]
+        decision:
+          type: string
+          nullable: true
+          enum: [approved, declined, null]
+      required: [inquiryId, status]
+
     RegisterRequest:
       type: object
       properties:
-        biometricData:
+        inquiryId:
           type: string
-          description: Base64-encoded simulated biometric payload (face geometry, fingerprint hash, etc.)
-        deviceTier:
-          type: string
-          enum: [software, secure_enclave, specialized]
-          description: Hardware tier used for biometric capture
+          description: Id returned by POST /inquiries after the user completes the hosted flow.
         appContext:
           type: string
-          description: Application context identifier for scoped nullifier generation
-      required:
-        - biometricData
-        - deviceTier
-        - appContext
+          description: Application context. Same (subject, appContext) ⇒ same nullifier; different appContexts are uncorrelated.
+          maxLength: 128
+      required: [inquiryId, appContext]
 
     RegisterResponse:
       type: object
       properties:
         commitmentHash:
           type: string
+          description: HMAC-SHA256 commitment id. Cannot be reversed to recover the subject.
         nullifier:
           type: string
+          description: HMAC-SHA256 nullifier scoped to (subject, appContext).
+        humanBadge:
+          type: string
+          description: RS256-signed JWT. Verify with JWKS at /.well-known/jwks.json.
         registeredAt:
           type: string
           format: date-time
-        proofGenerationMs:
-          type: number
-      required:
-        - commitmentHash
-        - nullifier
-        - registeredAt
-        - proofGenerationMs
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the issued human badge expires (24h).
+      required: [commitmentHash, nullifier, humanBadge, registeredAt, expiresAt]
 
     VerifyRequest:
       type: object
       properties:
-        proof:
+        humanBadge:
           type: string
-        nullifier:
-          type: string
+          description: The JWT returned by /register.
         appContext:
           type: string
-      required:
-        - proof
-        - nullifier
-        - appContext
+          description: Must match the app_context claim in the badge.
+      required: [humanBadge, appContext]
 
     VerifyResponse:
       type: object
       properties:
-        verified:
-          type: boolean
-        humanBadge:
+        verified: { type: boolean }
+        nullifier:
           type: string
+          description: Echoed from the badge claims; absent on failure.
+        commitmentHash:
+          type: string
+          description: Echoed from the badge subject; absent on failure.
         verifiedAt:
           type: string
           format: date-time
-        message:
-          type: string
-      required:
-        - verified
-        - verifiedAt
-        - message
+        message: { type: string }
+      required: [verified, verifiedAt, message]
 
     ProtocolStats:
       type: object
@@ -424,6 +532,13 @@ components:
                 - conflict
                 - internal_error
                 - service_unavailable
+                - inquiry_not_found
+                - inquiry_not_approved
+                - inquiry_consumed
+                - invalid_badge
+                - expired_badge
+                - vendor_unavailable
+                - webhook_signature_invalid
             message:
               type: string
               description: Human-readable explanation suitable for surfacing to developers.

@@ -53,9 +53,11 @@ export function Trust() {
           ]}
         />
         <p className="text-xs text-foreground/60 italic">
-          Note: The "real liveness vendor" path described above is partially live. The current public
-          demo runs a simulated flow with random data; the production verification path ships in a
-          subsequent release. The Demo page labels each mode clearly.
+          The verification path described above is live today. When the operator has not configured
+          Persona credentials, an auto-approving mock vendor is used in its place so the flow can be
+          exercised end-to-end without external accounts; the Demo page labels which vendor is
+          active. The signing key, JWKS endpoint, and webhook signature verification are identical
+          in both modes.
         </p>
       </LegalSection>
 

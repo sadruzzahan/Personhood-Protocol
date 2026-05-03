@@ -18,12 +18,15 @@ machine-readable `error.code` and the `request_id` for log correlation.
  * OpenAPI spec version: 0.1.0
  */
 
-export interface RegisterRequest {
-  /** Id returned by POST /inquiries after the user completes the hosted flow. */
-  inquiryId: string;
+export interface CreateInquiryRequest {
   /**
-   * Application context. Same (subject, appContext) ⇒ same nullifier; different appContexts are uncorrelated.
+   * Optional opaque id you can use to correlate this inquiry back to your own user record.
    * @maxLength 128
    */
-  appContext: string;
+  referenceId?: string;
+  /**
+   * Where the hosted flow should send the user after completion.
+   * @maxLength 512
+   */
+  redirectUri?: string;
 }

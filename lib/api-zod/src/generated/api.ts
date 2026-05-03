@@ -47,8 +47,88 @@ export const ReadinessCheckResponse = zod.object({
 });
 
 /**
- * Accepts a simulated biometric payload, generates a cryptographic commitment hash and nullifier, stores them, and returns the commitment details.
- * @summary Register a biometric commitment
+ * Creates a hosted identity-verification inquiry with the configured
+vendor (Persona by default; a "mock" vendor activates automatically
+when Persona credentials are absent so the demo flow keeps working).
+Returns a `hostedUrl` that you redirect the end user to.
+
+ * @summary Start a hosted liveness inquiry
+ */
+export const createInquiryHeaderIdempotencyKeyMax = 200;
+
+export const CreateInquiryHeader = zod.object({
+  "Idempotency-Key": zod
+    .string()
+    .max(createInquiryHeaderIdempotencyKeyMax)
+    .optional()
+    .describe(
+      "Opaque idempotency key (≤200 chars). Repeating the same key + body within 24h returns the original response.",
+    ),
+});
+
+export const createInquiryBodyReferenceIdMax = 128;
+
+export const createInquiryBodyRedirectUriMax = 512;
+
+export const CreateInquiryBody = zod.object({
+  referenceId: zod
+    .string()
+    .max(createInquiryBodyReferenceIdMax)
+    .optional()
+    .describe(
+      "Optional opaque id you can use to correlate this inquiry back to your own user record.",
+    ),
+  redirectUri: zod
+    .string()
+    .url()
+    .max(createInquiryBodyRedirectUriMax)
+    .optional()
+    .describe("Where the hosted flow should send the user after completion."),
+});
+
+export const CreateInquiryResponse = zod.object({
+  inquiryId: zod.string(),
+  hostedUrl: zod
+    .string()
+    .describe("Open this URL in a browser to start the hosted liveness check."),
+  vendor: zod.enum(["mock", "persona"]),
+  status: zod.enum(["pending"]),
+});
+
+/**
+ * Returns the current status of an inquiry. Use this to wait until the user has completed the hosted flow before calling /register.
+ * @summary Poll inquiry status
+ */
+export const GetInquiryParams = zod.object({
+  inquiryId: zod.coerce.string(),
+});
+
+export const GetInquiryResponse = zod.object({
+  inquiryId: zod.string(),
+  status: zod.enum([
+    "pending",
+    "completed",
+    "approved",
+    "declined",
+    "expired",
+    "failed",
+  ]),
+  decision: zod
+    .union([
+      zod.literal("approved"),
+      zod.literal("declined"),
+      zod.literal(null),
+    ])
+    .nullish(),
+});
+
+/**
+ * Mints a Proof-of-Personhood commitment from a completed inquiry.
+The server derives a per-app nullifier (HMAC-SHA256) and signs an
+RS256 human badge JWT. Verifiers can validate the badge offline
+using the JWKS at `/.well-known/jwks.json`.
+
+ * @summary Register a verified human commitment
  */
 export const registerCommitmentHeaderIdempotencyKeyMax = 200;
 
@@ -62,30 +142,49 @@ export const RegisterCommitmentHeader = zod.object({
     ),
 });
 
+export const registerCommitmentBodyAppContextMax = 128;
+
 export const RegisterCommitmentBody = zod.object({
-  biometricData: zod
+  inquiryId: zod
     .string()
     .describe(
-      "Base64-encoded simulated biometric payload (face geometry, fingerprint hash, etc.)",
+      "Id returned by POST \/inquiries after the user completes the hosted flow.",
     ),
-  deviceTier: zod
-    .enum(["software", "secure_enclave", "specialized"])
-    .describe("Hardware tier used for biometric capture"),
   appContext: zod
     .string()
-    .describe("Application context identifier for scoped nullifier generation"),
+    .max(registerCommitmentBodyAppContextMax)
+    .describe(
+      "Application context. Same (subject, appContext) ⇒ same nullifier; different appContexts are uncorrelated.",
+    ),
 });
 
 export const RegisterCommitmentResponse = zod.object({
-  commitmentHash: zod.string(),
-  nullifier: zod.string(),
+  commitmentHash: zod
+    .string()
+    .describe(
+      "HMAC-SHA256 commitment id. Cannot be reversed to recover the subject.",
+    ),
+  nullifier: zod
+    .string()
+    .describe("HMAC-SHA256 nullifier scoped to (subject, appContext)."),
+  humanBadge: zod
+    .string()
+    .describe(
+      "RS256-signed JWT. Verify with JWKS at \/.well-known\/jwks.json.",
+    ),
   registeredAt: zod.coerce.date(),
-  proofGenerationMs: zod.number(),
+  expiresAt: zod.coerce
+    .date()
+    .describe("When the issued human badge expires (24h)."),
 });
 
 /**
- * Verifies a previously-issued attestation token against the nullifier registry. Returns a human-badge token on success.
- * @summary Verify an attestation token
+ * Verifies an RS256-signed human badge JWT. Checks the signature
+against the JWKS, the issuer, the audience (your project id), the
+expiration, and the app_context claim. Cross-checks the embedded
+nullifier against the on-chain-style commitment registry.
+
+ * @summary Verify a human-badge JWT
  */
 export const verifyProofHeaderIdempotencyKeyMax = 200;
 
@@ -100,14 +199,22 @@ export const VerifyProofHeader = zod.object({
 });
 
 export const VerifyProofBody = zod.object({
-  proof: zod.string(),
-  nullifier: zod.string(),
-  appContext: zod.string(),
+  humanBadge: zod.string().describe("The JWT returned by \/register."),
+  appContext: zod
+    .string()
+    .describe("Must match the app_context claim in the badge."),
 });
 
 export const VerifyProofResponse = zod.object({
   verified: zod.boolean(),
-  humanBadge: zod.string().optional(),
+  nullifier: zod
+    .string()
+    .optional()
+    .describe("Echoed from the badge claims; absent on failure."),
+  commitmentHash: zod
+    .string()
+    .optional()
+    .describe("Echoed from the badge subject; absent on failure."),
   verifiedAt: zod.coerce.date(),
   message: zod.string(),
 });
