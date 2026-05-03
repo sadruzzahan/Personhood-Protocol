@@ -58,16 +58,27 @@ function sha256Hex(input: string): string {
 
 const router: IRouter = Router();
 
-// Every public endpoint requires an API key, is rate limited, and is logged
-// to request_logs. POST endpoints additionally honor Idempotency-Key.
-// Logger first so auth failures are also persisted (project_id = null).
-router.use(requestLoggerMiddleware);
-router.use(requireApiKey);
+// Apply hardening per-route (not via router.use) so this router cannot
+// inadvertently intercept sibling routers (e.g. /internal/dashboard) that
+// use Clerk session auth instead of API-key auth.
+//
+// Order matters: requestLogger is first so auth-rejected requests are still
+// persisted to request_logs (with project_id = null).
+const publicWrite = [
+  requestLoggerMiddleware,
+  requireApiKey,
+  rateLimit("write"),
+  idempotencyMiddleware,
+] as const;
+const publicRead = [
+  requestLoggerMiddleware,
+  requireApiKey,
+  rateLimit("read"),
+] as const;
 
 router.post(
   "/register",
-  rateLimit("write"),
-  idempotencyMiddleware,
+  ...publicWrite,
   async (req, res, next) => {
     try {
       const parsed = RegisterCommitmentBody.safeParse(req.body);
@@ -141,8 +152,7 @@ router.post(
 
 router.post(
   "/verify",
-  rateLimit("write"),
-  idempotencyMiddleware,
+  ...publicWrite,
   async (req, res, next) => {
     try {
       const parsed = VerifyProofBody.safeParse(req.body);
@@ -197,7 +207,7 @@ router.post(
   },
 );
 
-router.get("/stats", rateLimit("read"), async (_req, res, next) => {
+router.get("/stats", ...publicRead, async (_req, res, next) => {
   try {
     const uptimeSeconds = (Date.now() - serverStartedAt) / 1000;
 
@@ -224,7 +234,7 @@ router.get("/stats", rateLimit("read"), async (_req, res, next) => {
   }
 });
 
-router.get("/nullifier/:hash", rateLimit("read"), async (req, res, next) => {
+router.get("/nullifier/:hash", ...publicRead, async (req, res, next) => {
   try {
     const parsed = CheckNullifierParams.safeParse(req.params);
     if (!parsed.success) {
