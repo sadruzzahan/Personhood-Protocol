@@ -11,6 +11,10 @@ import { Home } from "@/pages/Home";
 import { Demo } from "@/pages/Demo";
 import { Developers } from "@/pages/Developers";
 import { Stats } from "@/pages/Stats";
+import { Trust } from "@/pages/Trust";
+import { Privacy } from "@/pages/Privacy";
+import { Terms } from "@/pages/Terms";
+import { Status } from "@/pages/Status";
 
 const queryClient = new QueryClient();
 
@@ -37,6 +41,10 @@ function Router(): ReactElement {
             <Route path="/demo" component={Demo} />
             <Route path="/developers" component={Developers} />
             <Route path="/stats" component={Stats} />
+            <Route path="/trust" component={Trust} />
+            <Route path="/privacy" component={Privacy} />
+            <Route path="/terms" component={Terms} />
+            <Route path="/status" component={Status} />
             <Route component={NotFound} />
           </Switch>
         </motion.div>

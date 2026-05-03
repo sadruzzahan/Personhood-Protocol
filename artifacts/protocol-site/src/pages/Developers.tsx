@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useSearch } from "wouter";
+import { Link, useSearch } from "wouter";
 import {
   useCheckNullifier,
   getCheckNullifierQueryKey,
@@ -12,24 +12,32 @@ const CODE_SNIPPETS: Record<string, string> = {
   useVerifyProof
 } from "@workspace/api-client-react";
 
-// 1. Register a biometric commitment
+// 1. Start a verification (today: simulated;
+//    production: opens vendor liveness flow).
 const register = useRegisterCommitment();
 
 register.mutate({
   data: {
-    biometricData: captureLocalBiometric(),
+    biometricData: simulatedSubjectPayload(),
     deviceTier: "secure_enclave",
     appContext: "your-app-id"
   }
 }, {
-  onSuccess: ({ commitmentHash, nullifier, proofGenerationMs }) => {
-    // Store nullifier for verification step
-    // commitmentHash is published on-chain
-    const proof = generateZkProof(biometric, proofGenerationMs);
+  onSuccess: ({ commitmentHash, nullifier }) => {
+    // Treat the returned token as opaque.
+    // The production API will return a JWT human-badge.
+    const attestation_token = mintAttestation(nullifier);
 
-    // 2. Verify the proof
     verify.mutate({
-      data: { proof, nullifier, appContext: "your-app-id" }
+      data: {
+        // attestation_token is the documented field name.
+        // Wire-level field is currently named "proof"
+        // until the codegen rename ships.
+        attestation_token,
+        proof: attestation_token,
+        nullifier,
+        appContext: "your-app-id"
+      }
     }, {
       onSuccess: ({ verified, humanBadge }) => {
         if (verified) markUserAsHuman(humanBadge);
@@ -42,23 +50,24 @@ register.mutate({
 
 BASE = "https://your-domain.com/api"
 
-# 1. Register a biometric commitment
+# 1. Start a verification.
 reg = httpx.post(f"{BASE}/register", json={
-    "biometricData": capture_local_biometric(),
+    "biometricData": simulated_subject_payload(),
     "deviceTier": "secure_enclave",
     "appContext": "your-app-id"
 }).json()
 
-commitment_hash = reg["commitmentHash"]
 nullifier = reg["nullifier"]
-proof_ms = reg["proofGenerationMs"]
 
-# 2. Generate ZK proof (on device)
-proof = generate_zk_proof(biometric, proof_ms)
+# 2. Mint an attestation token (today: opaque;
+#    production: JWT issued after vendor liveness).
+attestation_token = mint_attestation(nullifier)
 
-# 3. Verify
+# 3. Verify and mark the user. The wire-level field is
+#    still "proof" until the codegen rename ships.
 result = httpx.post(f"{BASE}/verify", json={
-    "proof": proof,
+    "attestation_token": attestation_token,
+    "proof": attestation_token,
     "nullifier": nullifier,
     "appContext": "your-app-id"
 }).json()
@@ -76,9 +85,8 @@ import (
 
 const base = "https://your-domain.com/api"
 
-// 1. Register commitment
 regBody, _ := json.Marshal(map[string]string{
-    "biometricData": captureLocalBiometric(),
+    "biometricData": simulatedSubjectPayload(),
     "deviceTier":    "secure_enclave",
     "appContext":    "your-app-id",
 })
@@ -86,19 +94,20 @@ regResp, _ := http.Post(base+"/register",
     "application/json", bytes.NewBuffer(regBody))
 
 var reg struct {
-    CommitmentHash string  \`json:"commitmentHash"\`
-    Nullifier      string  \`json:"nullifier"\`
-    ProofMs        float64 \`json:"proofGenerationMs"\`
+    CommitmentHash string \`json:"commitmentHash"\`
+    Nullifier      string \`json:"nullifier"\`
 }
 json.NewDecoder(regResp.Body).Decode(&reg)
 
-// 2. Generate ZK proof on device
-proof := generateZkProof(reg.ProofMs)
+token := mintAttestation(reg.Nullifier)
 
-// 3. Verify
 verBody, _ := json.Marshal(map[string]string{
-    "proof": proof, "nullifier": reg.Nullifier,
-    "appContext": "your-app-id",
+    // attestation_token is the documented field name.
+    // proof is the current wire-level field (rename pending).
+    "attestation_token": token,
+    "proof":             token,
+    "nullifier":         reg.Nullifier,
+    "appContext":        "your-app-id",
 })
 http.Post(base+"/verify", "application/json",
     bytes.NewBuffer(verBody))`,
@@ -108,44 +117,48 @@ const ENDPOINTS = [
   {
     method: "POST",
     path: "/api/register",
-    summary: "Register a biometric commitment",
-    desc: "Accepts a biometric payload, generates a cryptographic commitment hash and nullifier, stores them, and returns the commitment details.",
+    summary: "Register a verification",
+    desc: "In production, this is called after the user completes a vendor-hosted liveness check. The server derives a per-app nullifier from the verified subject and registers it. Today, the endpoint accepts a placeholder payload for the simulated demo.",
     request: `{
-  biometricData: string   // Base64 biometric payload
+  biometricData: string  // Today: opaque payload.
+                         // Production: vendor inquiry id.
   deviceTier: "software" | "secure_enclave" | "specialized"
-  appContext: string      // Application context for scoped nullifier
+  appContext: string     // Per-app scope for the nullifier
 }`,
     response: `{
-  commitmentHash: string  // C = Hash(biometric, salt)
-  nullifier: string       // N = Hash(biometric, appContext)
+  commitmentHash: string  // HMAC commitment
+  nullifier: string       // HMAC(master_key, subject || appContext)
   registeredAt: string    // ISO timestamp
   proofGenerationMs: number
 }`,
-    errors: ["409 — Nullifier already registered", "422 — Invalid biometric payload"],
+    errors: ["409 — Nullifier already registered for this app context", "422 — Invalid request payload"],
   },
   {
     method: "POST",
     path: "/api/verify",
-    summary: "Verify a ZK proof",
-    desc: "Verifies a ZK proof against the commitment registry. Returns a human badge token on success.",
+    summary: "Verify an attestation token",
+    desc: "Verifies a previously-issued attestation token against the nullifier registry. Returns a human-badge token on success, which downstream applications store and verify offline. The documented field name is `attestation_token`; the legacy `proof` alias is accepted on the wire today and will be removed in a future release. Send both during the transition.",
     request: `{
-  proof: string      // zkSNARK proof blob
-  nullifier: string  // From registration step
-  appContext: string // Must match registration context
+  attestation_token: string  // Documented field name.
+                             // Opaque today; signed JWT in production.
+  proof: string              // Legacy alias, accepted on the wire today.
+                             // Will be removed in a future release.
+  nullifier: string          // From the registration step
+  appContext: string         // Must match registration context
 }`,
     response: `{
   verified: boolean
-  humanBadge?: string  // Present if verified === true
+  humanBadge?: string   // JWT badge if verified === true
   verifiedAt: string
   message: string
 }`,
-    errors: ["422 — Invalid proof payload"],
+    errors: ["422 — Invalid request payload"],
   },
   {
     method: "GET",
     path: "/api/stats",
-    summary: "Protocol statistics",
-    desc: "Returns aggregate protocol statistics. No parameters required.",
+    summary: "Service statistics",
+    desc: "Aggregate counters for the verification registry. Public read-only, no parameters required.",
     request: "(none)",
     response: `{
   totalCommitments: number
@@ -160,7 +173,7 @@ const ENDPOINTS = [
     method: "GET",
     path: "/api/nullifier/:hash",
     summary: "Check nullifier status",
-    desc: "Returns whether a nullifier hash has been registered, enabling duplicate-registration detection.",
+    desc: "Returns whether a nullifier hash has been registered. Useful for client-side duplicate detection without a full /verify round-trip.",
     request: "hash — path parameter (string)",
     response: `{
   hash: string
@@ -240,10 +253,57 @@ export function Developers() {
     <div className="flex flex-col min-h-screen">
       <div className="max-w-6xl mx-auto w-full px-4 py-16">
         <p className="text-xs font-mono text-primary tracking-widest uppercase mb-2">Developer Portal</p>
-        <h1 className="text-4xl font-medium tracking-tight mb-4">Build with the Protocol</h1>
-        <p className="text-muted-foreground font-mono text-sm mb-16">
-          Integrating proof of personhood into any application requires fewer than 20 lines of code.
+        <h1 className="text-4xl font-medium tracking-tight mb-4">Build with the API</h1>
+        <p className="text-muted-foreground font-mono text-sm mb-4">
+          Drop in unique-human verification with a single API key. Vendor liveness check, signed badges, no biometric data on your servers.
         </p>
+        <p className="text-xs font-mono text-muted-foreground mb-16">
+          Read the <Link href="/trust" className="text-primary hover:underline" data-testid="link-developers-trust">threat model</Link> before integrating.
+        </p>
+
+        {/* Production notice */}
+        <div className="border border-primary/30 bg-primary/5 p-4 mb-12 font-mono text-xs text-foreground/80 leading-relaxed" data-testid="developers-production-notice">
+          <p className="text-primary mb-1 tracking-widest uppercase">API maturity notice</p>
+          <p>
+            The endpoints below are stable and live, but the verification semantics are currently
+            symbolic: there is no real liveness check, and the <code className="text-primary">humanBadge</code>{" "}
+            value is a hash, not a JWT. The production release ships vendor-backed liveness via Persona
+            and JWT badges signed against a public JWKS at <code className="text-primary">/.well-known/jwks.json</code>.
+            Field shapes won't break; semantics will tighten.
+          </p>
+        </div>
+
+        {/* Threat model */}
+        <section className="mb-20" data-testid="section-threat-model">
+          <h2 className="text-2xl font-medium mb-2">Threat model — read this first</h2>
+          <p className="text-sm text-muted-foreground mb-6 max-w-3xl">
+            What this service defends against, and what it doesn't. Most integration mistakes come
+            from assuming a uniqueness layer is also an identity layer or a deepfake-resistance
+            layer. It isn't.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-0 border border-border">
+            <div className="p-6 border-b md:border-b-0 md:border-r border-border" data-testid="threat-protected">
+              <p className="font-mono text-xs text-primary tracking-widest uppercase mb-3">Protected</p>
+              <ul className="text-sm text-muted-foreground space-y-2 leading-relaxed">
+                <li className="flex gap-2"><span className="text-primary font-mono">—</span> Sybil signups against a single app context</li>
+                <li className="flex gap-2"><span className="text-primary font-mono">—</span> Trivial bot account creation</li>
+                <li className="flex gap-2"><span className="text-primary font-mono">—</span> Cross-app correlation by default</li>
+              </ul>
+            </div>
+            <div className="p-6" data-testid="threat-out-of-scope">
+              <p className="font-mono text-xs text-muted-foreground tracking-widest uppercase mb-3">Out of scope</p>
+              <ul className="text-sm text-muted-foreground space-y-2 leading-relaxed">
+                <li className="flex gap-2"><span className="text-muted-foreground font-mono">—</span> Determined deepfake attackers</li>
+                <li className="flex gap-2"><span className="text-muted-foreground font-mono">—</span> Coerced or sold verifications</li>
+                <li className="flex gap-2"><span className="text-muted-foreground font-mono">—</span> Identity / KYC / age verification</li>
+                <li className="flex gap-2"><span className="text-muted-foreground font-mono">—</span> Decentralization & on-chain auditability</li>
+              </ul>
+            </div>
+          </div>
+          <p className="text-xs font-mono text-muted-foreground mt-3">
+            Full description on the <Link href="/trust" className="text-primary hover:underline">Trust & Security</Link> page.
+          </p>
+        </section>
 
         {/* SDK Code Snippets */}
         <section className="mb-20" data-testid="section-sdk">
@@ -370,14 +430,14 @@ export function Developers() {
             {/* POST /api/verify */}
             {playgroundTab === "verify" && (
               <div className="p-6 flex flex-col gap-4" data-testid="playground-verify">
-                <p className="font-mono text-xs text-muted-foreground">Submit a ZK proof and nullifier to verify humanhood. Returns a <code className="text-primary">humanBadge</code> token on success.</p>
+                <p className="font-mono text-xs text-muted-foreground">Submit an attestation token and nullifier to verify uniqueness. Returns a <code className="text-primary">humanBadge</code> token on success.</p>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="flex flex-col gap-1">
-                    <label className="font-mono text-xs text-muted-foreground">proof</label>
+                    <label className="font-mono text-xs text-muted-foreground">attestation_token <span className="text-muted-foreground/50">(wire field: <code>proof</code>)</span></label>
                     <input
                       type="text"
                       className="border border-border bg-background px-3 py-2 font-mono text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary transition-colors"
-                      placeholder="zk_abc123... (any non-empty string)"
+                      placeholder="opaque attestation token (any non-empty string)"
                       value={verifyProof}
                       onChange={e => setVerifyProof(e.target.value)}
                       data-testid="input-verify-proof"

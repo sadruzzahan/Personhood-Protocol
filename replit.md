@@ -20,10 +20,17 @@ Endpoints:
 React + Vite + Wouter + TanStack Query. Dark monochrome theme, electric cyan accent, Geist/Geist Mono fonts, no border radius. Preview at `/`.
 
 Pages:
-- `/` — Full marketing landing page (hero, problem, how-it-works, hardware tiers, comparison table, use cases, business model)
-- `/demo` — Interactive 4-step verification wizard (liveness → commitment → ZK proof → badge), calls live API
-- `/developers` — SDK code snippets (JS/Python/Go), API reference cards, live nullifier playground
-- `/stats` — Live protocol stats with animated counters, auto-refresh every 10s
+- `/` — Marketing landing page (hero, problem, how-it-works, honest scope, use cases, stats teaser)
+- `/demo` — Simulated 4-step walkthrough (liveness → nullifier → attestation → badge); banner clearly labels it as simulation
+- `/developers` — SDK snippets (JS/Python/Go), API reference, threat-model summary, live playground
+- `/stats` — Live service stats with animated counters, auto-refresh
+- `/trust` — Threat model (what we protect against / what we don't), data handling, subprocessors, retention, incident response
+- `/privacy` — Privacy Policy draft (developers + end-users, GDPR/CCPA rights, subprocessors)
+- `/terms` — Terms of Service draft (acceptable use, rate limits, warranty disclaimer, liability cap)
+- `/status` — Health indicator polled from `/api/healthz`, placeholder for future Statuspage/Better Stack integration
+
+### TODO — Legal review
+The pages at `/trust`, `/privacy`, and `/terms` are structured drafts written by engineering, **not** legally reviewed. Each page renders a visible "DRAFT — REVIEW WITH COUNSEL BEFORE LAUNCH" banner. **Have a licensed attorney review and approve all three pages before public launch.** Company info (legal name, contact emails, jurisdiction, effective date) lives in `artifacts/protocol-site/src/lib/constants.ts` for easy update post-review.
 
 ## Stack
 

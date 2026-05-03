@@ -99,22 +99,38 @@ export function Layout({ children }: { children: React.ReactNode }) {
         {children}
       </main>
 
-      <footer className="border-t border-border/40 bg-card py-8 mt-auto">
-        <div className="container mx-auto px-4 max-w-6xl flex flex-col md:flex-row items-center justify-between gap-6">
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 bg-primary rounded-none" />
-            <span className="text-sm font-medium">Proof of Personhood Foundation</span>
+      <footer className="border-t border-border/40 bg-card py-8 mt-auto" data-testid="site-footer">
+        <div className="container mx-auto px-4 max-w-6xl flex flex-col gap-6">
+          <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 bg-primary rounded-none" />
+              <span className="text-sm font-medium">Proof of Personhood Foundation</span>
+            </div>
+            <div className="text-xs text-muted-foreground hidden md:block">
+              Unique-human verification for the post-AI internet.
+            </div>
+            <div className="flex items-center gap-3">
+              <Link href="/demo" className="text-xs font-medium border border-primary text-primary px-4 py-1.5 hover:bg-primary hover:text-primary-foreground transition-colors" data-testid="footer-cta-demo">
+                Try the Demo
+              </Link>
+              <Link href="/developers" className="text-xs text-muted-foreground hover:text-foreground transition-colors" data-testid="footer-cta-docs">
+                Developer Docs
+              </Link>
+            </div>
           </div>
-          <div className="text-xs text-muted-foreground hidden md:block">
-            Cryptographic identity for the post-AI internet.
-          </div>
-          <div className="flex items-center gap-3">
-            <Link href="/demo" className="text-xs font-medium border border-primary text-primary px-4 py-1.5 hover:bg-primary hover:text-primary-foreground transition-colors" data-testid="footer-cta-demo">
-              Try the Demo
-            </Link>
-            <Link href="/developers" className="text-xs text-muted-foreground hover:text-foreground transition-colors" data-testid="footer-cta-docs">
-              Developer Docs
-            </Link>
+          <div className="border-t border-border/40 pt-4 flex flex-col md:flex-row items-center justify-between gap-3">
+            <nav className="flex items-center flex-wrap justify-center gap-x-5 gap-y-2 text-xs text-muted-foreground" data-testid="footer-legal-nav">
+              <Link href="/trust" className="hover:text-primary transition-colors" data-testid="footer-link-trust">Trust &amp; Security</Link>
+              <Link href="/privacy" className="hover:text-primary transition-colors" data-testid="footer-link-privacy">Privacy</Link>
+              <Link href="/terms" className="hover:text-primary transition-colors" data-testid="footer-link-terms">Terms</Link>
+              <Link href="/status" className="hover:text-primary transition-colors flex items-center gap-1.5" data-testid="footer-link-status">
+                <span className="w-1.5 h-1.5 bg-primary rounded-full" />
+                Status
+              </Link>
+            </nav>
+            <p className="text-xs font-mono text-muted-foreground/60">
+              &copy; {new Date().getFullYear()} Proof of Personhood Foundation
+            </p>
           </div>
         </div>
       </footer>

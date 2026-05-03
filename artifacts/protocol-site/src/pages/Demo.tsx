@@ -44,7 +44,7 @@ function HashDisplay({ hash, label }: { hash: string; label: string }) {
 }
 
 function StepIndicator({ current }: { current: Step }) {
-  const steps = ["Liveness", "Commitment", "ZK Proof", "Badge"];
+  const steps = ["Liveness", "Nullifier", "Attestation", "Badge"];
   return (
     <div className="flex items-center gap-0 mb-12" data-testid="step-indicator">
       {steps.map((label, i) => (
@@ -77,7 +77,7 @@ export function Demo() {
   const [commitmentResult, setCommitmentResult] = useState<{ commitmentHash: string; nullifier: string; proofGenerationMs: number } | null>(null);
   const [hashProgress, setHashProgress] = useState(0);
   const [proofProgress, setProofProgress] = useState(0);
-  const [zkProof, setZkProof] = useState("");
+  const [attestationToken, setAttestationToken] = useState("");
   const [badgeResult, setBadgeResult] = useState<{ humanBadge: string; message: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const biometricData = useRef(randomHex(32));
@@ -85,7 +85,6 @@ export function Demo() {
   const [, setLocation] = useLocation();
   const registerMutation = useRegisterCommitment();
   const verifyMutation = useVerifyProof();
-  const [livenessApiStatus, setLivenessApiStatus] = useState<"idle" | "checking" | "ok" | "error">("idle");
   const { refetch: refetchHealth } = useHealthCheck({ query: { enabled: false, queryKey: getHealthCheckQueryKey() } });
 
   function reset() {
@@ -95,10 +94,9 @@ export function Demo() {
     setCommitmentResult(null);
     setHashProgress(0);
     setProofProgress(0);
-    setZkProof("");
+    setAttestationToken("");
     setBadgeResult(null);
     setError(null);
-    setLivenessApiStatus("idle");
     biometricData.current = randomHex(32);
     registerMutation.reset();
     verifyMutation.reset();
@@ -107,10 +105,7 @@ export function Demo() {
   function startLiveness() {
     setStep(1);
     setScanning(true);
-    setLivenessApiStatus("checking");
-    refetchHealth().then((res) => {
-      setLivenessApiStatus(res.error ? "error" : "ok");
-    }).catch(() => setLivenessApiStatus("error"));
+    refetchHealth().catch(() => { /* health probe is best-effort */ });
     setTimeout(() => {
       setLivenessConfirmed(true);
       setScanning(false);
@@ -157,8 +152,8 @@ export function Demo() {
     };
     requestAnimationFrame(tick);
 
-    const proof = `zk_${randomHex(24)}`;
-    setZkProof(proof);
+    const proof = `att_${randomHex(24)}`;
+    setAttestationToken(proof);
 
     setTimeout(() => {
       verifyMutation.mutate(
@@ -180,11 +175,21 @@ export function Demo() {
   return (
     <div className="flex flex-col min-h-screen">
       <div className="flex-1 max-w-3xl mx-auto w-full px-4 py-16">
-        <p className="text-xs font-mono text-primary tracking-widest uppercase mb-2">Live Demo</p>
-        <h1 className="text-4xl font-medium tracking-tight mb-4">Proof of Personhood</h1>
-        <p className="text-muted-foreground font-mono text-sm mb-12">
-          Walk through a real verification flow. Each step calls the live API. Your biometric data is simulated — no camera access required.
+        <p className="text-xs font-mono text-primary tracking-widest uppercase mb-2">Simulated Walkthrough</p>
+        <h1 className="text-4xl font-medium tracking-tight mb-4">How a verification looks end-to-end</h1>
+        <p className="text-muted-foreground font-mono text-sm mb-6">
+          A guided walkthrough of the verification flow. Each step calls the live API, but the
+          biometric capture is simulated locally — no camera access, no real liveness check.
         </p>
+
+        <div className="border border-primary/40 bg-primary/5 p-4 mb-12 font-mono text-xs text-foreground/80 leading-relaxed" data-testid="demo-simulation-banner">
+          <p className="text-primary mb-1 tracking-widest uppercase">Simulation only</p>
+          <p>
+            Production uses a hosted Persona liveness check, an HMAC-derived per-app nullifier, and a
+            JWT human-badge signed against our public JWKS. That path ships in a coming release; this
+            page exists to demonstrate the shape of the flow today.
+          </p>
+        </div>
 
         <StepIndicator current={(step === 0 ? 1 : step) as Step} />
 
@@ -205,11 +210,11 @@ export function Demo() {
               </svg>
             </div>
             <div>
-              <h2 className="text-xl font-medium mb-2">Ready to verify</h2>
-              <p className="text-sm text-muted-foreground max-w-sm">This demo simulates the full cryptographic flow without accessing your camera. A random biometric payload will be generated.</p>
+              <h2 className="text-xl font-medium mb-2">Ready to walk through</h2>
+              <p className="text-sm text-muted-foreground max-w-sm">No camera access. A random subject payload stands in for what the production liveness vendor would return.</p>
             </div>
             <div className="font-mono text-xs text-muted-foreground bg-background border border-border px-4 py-2 w-full text-left">
-              Simulated biometric: <span className="text-primary">{biometricData.current.slice(0, 16)}...</span>
+              Simulated subject: <span className="text-primary">{biometricData.current.slice(0, 16)}...</span>
             </div>
             <button
               className="w-full bg-primary text-primary-foreground py-3 font-medium text-sm hover:bg-primary/90 transition-colors"
@@ -225,15 +230,15 @@ export function Demo() {
         {step === 1 && !error && (
           <div className="border border-border bg-card p-10 flex flex-col items-center gap-6" data-testid="step-liveness">
             <div className="w-full text-center">
-              <h2 className="text-xl font-medium mb-1">Liveness Check</h2>
-              <p className="text-sm text-muted-foreground">Scanning for unique human biometric signals...</p>
+              <h2 className="text-xl font-medium mb-1">Liveness Check (simulated)</h2>
+              <p className="text-sm text-muted-foreground">In production, the user completes a hosted liveness check from our identity-verification subprocessor.</p>
             </div>
             <FaceOverlay scanning={scanning} confirmed={livenessConfirmed} />
             <div className="w-full font-mono text-xs text-center">
               {livenessConfirmed ? (
-                <span className="text-primary">Liveness confirmed — unique human detected</span>
+                <span className="text-primary">Simulated liveness pass — proceeding</span>
               ) : (
-                <span className="text-muted-foreground animate-pulse">Analyzing face geometry and depth signals...</span>
+                <span className="text-muted-foreground animate-pulse">Pretending to analyze face geometry and depth signals...</span>
               )}
             </div>
             {livenessConfirmed && (
@@ -242,7 +247,7 @@ export function Demo() {
                 onClick={startCommitment}
                 data-testid="button-proceed-commitment"
               >
-                Generate Commitment Hash
+                Register Nullifier
               </button>
             )}
           </div>
@@ -252,29 +257,29 @@ export function Demo() {
         {step === 2 && !error && (
           <div className="border border-border bg-card p-10 flex flex-col gap-6" data-testid="step-commitment">
             <div>
-              <h2 className="text-xl font-medium mb-1">Biometric Commitment</h2>
-              <p className="text-sm text-muted-foreground font-mono">Computing C = Hash(biometric, salt) and N = Hash(biometric, appContext)...</p>
+              <h2 className="text-xl font-medium mb-1">Nullifier registration</h2>
+              <p className="text-sm text-muted-foreground font-mono">Computing C = HMAC(master_key, subject) and N = HMAC(master_key, subject || appContext)...</p>
             </div>
             <div className="h-1 bg-border w-full">
               <div className="h-1 bg-primary transition-all duration-100" style={{ width: `${Math.round(hashProgress * 100)}%` }} />
             </div>
             <div className="font-mono text-xs text-muted-foreground">
-              {Math.round(hashProgress * 100)}% — {hashProgress < 1 ? "hashing..." : "commitment stored on-chain"}
+              {Math.round(hashProgress * 100)}% — {hashProgress < 1 ? "hashing..." : "commitment stored in registry"}
             </div>
 
             {commitmentResult && (
               <div className="flex flex-col gap-3" data-testid="commitment-results">
-                <HashDisplay hash={commitmentResult.commitmentHash} label="COMMITMENT HASH (on-chain)" />
+                <HashDisplay hash={commitmentResult.commitmentHash} label="COMMITMENT HASH (server registry)" />
                 <HashDisplay hash={commitmentResult.nullifier} label="NULLIFIER (app-scoped)" />
                 <div className="font-mono text-xs text-muted-foreground border border-border bg-background p-3">
-                  Proof generation time: <span className="text-primary">{commitmentResult.proofGenerationMs}ms</span>
+                  Server processing time: <span className="text-primary">{commitmentResult.proofGenerationMs}ms</span>
                 </div>
                 <button
                   className="w-full bg-primary text-primary-foreground py-3 font-medium text-sm hover:bg-primary/90 transition-colors"
                   onClick={startProof}
                   data-testid="button-proceed-proof"
                 >
-                  Generate ZK Proof
+                  Issue Attestation
                 </button>
               </div>
             )}
@@ -284,26 +289,26 @@ export function Demo() {
           </div>
         )}
 
-        {/* Step 3: ZK Proof */}
+        {/* Step 3: Attestation issuance */}
         {step === 3 && !error && (
           <div className="border border-border bg-card p-10 flex flex-col gap-6" data-testid="step-proof">
             <div>
-              <h2 className="text-xl font-medium mb-1">ZK Proof Generation</h2>
-              <p className="text-sm text-muted-foreground font-mono">Computing zkSNARK (Groth16) on device. Proving knowledge of biometric without revealing it...</p>
+              <h2 className="text-xl font-medium mb-1">Issuing attestation token</h2>
+              <p className="text-sm text-muted-foreground font-mono">Today: server mints an opaque token bound to the registered nullifier. Production: the server signs a JWT attestation_token with the RSA key published at /.well-known/jwks.json.</p>
             </div>
 
             <div className="border border-border bg-background p-4 font-mono text-xs space-y-1">
-              <p className="text-muted-foreground">circuit: <span className="text-primary">biometric_commitment_v1</span></p>
-              <p className="text-muted-foreground">public inputs: <span className="text-primary">commitment_set_root, nullifier, app_context_hash</span></p>
-              <p className="text-muted-foreground">witness: <span className="text-primary">[hidden]</span></p>
-              <p className="text-muted-foreground">proof: <span className="text-primary">{zkProof.slice(0, 20)}...</span></p>
+              <p className="text-muted-foreground">issuer: <span className="text-primary">pop-protocol-api</span></p>
+              <p className="text-muted-foreground">audience: <span className="text-primary">app:proof-of-personhood-demo</span></p>
+              <p className="text-muted-foreground">claims: <span className="text-primary">nullifier, sub, iat, exp</span></p>
+              <p className="text-muted-foreground">attestation_token: <span className="text-primary">{attestationToken.slice(0, 20)}...</span></p>
             </div>
 
             <div className="h-1 bg-border w-full">
               <div className="h-1 bg-primary transition-all duration-100" style={{ width: `${Math.round(proofProgress * 100)}%` }} />
             </div>
             <div className="font-mono text-xs text-muted-foreground animate-pulse">
-              {Math.round(proofProgress * 100)}% — generating proof...
+              {Math.round(proofProgress * 100)}% — server is binding the token to the nullifier...
             </div>
           </div>
         )}
@@ -317,7 +322,7 @@ export function Demo() {
               </svg>
             </div>
             <div>
-              <h2 className="text-2xl font-medium mb-2 text-primary">Verified Human</h2>
+              <h2 className="text-2xl font-medium mb-2 text-primary">Verified Unique Human</h2>
               <p className="text-sm text-muted-foreground max-w-sm">{badgeResult.message}</p>
             </div>
             {badgeResult.humanBadge && (
