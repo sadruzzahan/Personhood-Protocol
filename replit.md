@@ -7,14 +7,22 @@ Full web presence for a cryptographic, privacy-preserving human verification pro
 ## Products
 
 ### `artifacts/api-server` — Protocol API
-Express 5 backend at port 8080. Simulates ZK-proof verification in memory (no database).
+Express 5 backend at port 8080. Persists data in Postgres via Drizzle ORM.
 
-Endpoints:
+Public endpoints (under `/api`, mounted unauthenticated for the prototype):
 - `POST /api/register` — register a biometric commitment, returns commitmentHash + nullifier
-- `POST /api/verify` — verify a ZK proof, returns humanBadge token on success
+- `POST /api/verify` — verify a proof, returns humanBadge token on success
 - `GET /api/stats` — protocol statistics (commitments, verifications, uptime)
 - `GET /api/nullifier/:hash` — check if a nullifier has been used
 - `GET /api/healthz` — health check
+
+Internal dashboard endpoints (under `/api/internal/dashboard`, gated by Clerk session — never by API keys):
+- `GET /me` — current user + active organization
+- `GET|POST /projects` — list/create projects
+- `GET|PATCH|DELETE /projects/:id` — project detail (with 24h stats), update, delete
+- `GET|POST /projects/:id/keys` — list/create API keys (full key shown once on create)
+- `POST /projects/:id/keys/:keyId/revoke` — revoke a key
+- `GET /projects/:id/events` — recent request log entries
 
 ### `artifacts/protocol-site` — Marketing & Developer Site
 React + Vite + Wouter + TanStack Query. Dark monochrome theme, electric cyan accent, Geist/Geist Mono fonts, no border radius. Preview at `/`.
@@ -28,6 +36,9 @@ Pages:
 - `/privacy` — Privacy Policy draft (developers + end-users, GDPR/CCPA rights, subprocessors)
 - `/terms` — Terms of Service draft (acceptable use, rate limits, warranty disclaimer, liability cap)
 - `/status` — Health indicator polled from `/api/healthz`, placeholder for future Statuspage/Better Stack integration
+- `/sign-in`, `/sign-up` — Clerk-hosted auth pages (themed to match the dark monochrome site)
+- `/dashboard` — Developer console: project list + create/delete (Clerk-authenticated)
+- `/dashboard/projects/:id` — Project detail with tabs: Overview (24h stats), Keys (issue/revoke), Events (recent requests), Settings (rename/env/delete)
 
 ### TODO — Legal review
 The pages at `/trust`, `/privacy`, and `/terms` are structured drafts written by engineering, **not** legally reviewed. Each page renders a visible "DRAFT — REVIEW WITH COUNSEL BEFORE LAUNCH" banner. **Have a licensed attorney review and approve all three pages before public launch.** Company info (legal name, contact emails, jurisdiction, effective date) lives in `artifacts/protocol-site/src/lib/constants.ts` for easy update post-review.
