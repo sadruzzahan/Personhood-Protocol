@@ -1,5 +1,6 @@
 import app from "./app";
 import { logger } from "./lib/logger";
+import { ensureDemoApiKey } from "./lib/demoBootstrap";
 
 const rawPort = process.env["PORT"];
 
@@ -22,4 +23,7 @@ app.listen(port, (err) => {
   }
 
   logger.info({ port }, "Server listening");
+  ensureDemoApiKey().catch((bootstrapErr) => {
+    logger.warn({ err: bootstrapErr }, "Demo API key bootstrap failed");
+  });
 });

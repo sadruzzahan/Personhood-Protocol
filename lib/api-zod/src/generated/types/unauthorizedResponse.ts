@@ -17,9 +17,9 @@ machine-readable `error.code` and the `request_id` for log correlation.
 
  * OpenAPI spec version: 0.1.0
  */
+import type { ErrorEnvelope } from "./errorEnvelope";
 
-export interface VerifyRequest {
-  proof: string;
-  nullifier: string;
-  appContext: string;
-}
+/**
+ * Missing or invalid API key.
+ */
+export type UnauthorizedResponse = ErrorEnvelope;

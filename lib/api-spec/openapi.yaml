@@ -3,7 +3,19 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: |
+    Proof of Personhood Protocol API.
+
+    All `/api/*` endpoints (except `/healthz` and `/readyz`) require a project
+    API key sent as `Authorization: Bearer pk_test_…` or
+    `Authorization: Bearer pk_live_…`.
+
+    Mutating endpoints accept an optional `Idempotency-Key` header. Sending the
+    same key with the same body within 24 hours returns the original response
+    byte-for-byte.
+
+    Errors always use the `ErrorEnvelope` shape, with a stable
+    machine-readable `error.code` and the `request_id` for log correlation.
 servers:
   - url: /api
     description: Base API path
@@ -12,16 +24,25 @@ tags:
     description: Health operations
   - name: protocol
     description: Proof of Personhood Protocol operations
+security:
+  - bearerAuth: []
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
-      summary: Health check
-      description: Returns server health status
+      summary: Health check (with DB ping)
+      description: Returns server health status. Returns 503 if a critical dependency (Postgres) is not reachable.
+      security: []
       responses:
         "200":
           description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+        "503":
+          description: One or more critical dependencies are unhealthy
           content:
             application/json:
               schema:
@@ -32,7 +53,9 @@ paths:
       operationId: registerCommitment
       tags: [protocol]
       summary: Register a biometric commitment
-      description: Accepts a simulated biometric payload, generates a cryptographic commitment hash and nullifier, stores them in-memory, and returns the commitment details.
+      description: Accepts a simulated biometric payload, generates a cryptographic commitment hash and nullifier, stores them, and returns the commitment details.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -42,29 +65,35 @@ paths:
       responses:
         "200":
           description: Commitment registered successfully
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/RegisterResponse"
-        "409":
-          description: Nullifier already registered (duplicate human)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "422":
-          description: Invalid biometric payload
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "408": { $ref: "#/components/responses/RequestTimeout" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "429": { $ref: "#/components/responses/RateLimited" }
 
   /verify:
     post:
       operationId: verifyProof
       tags: [protocol]
-      summary: Verify a zero-knowledge proof
-      description: Accepts a simulated ZK proof and nullifier, verifies against the commitment registry, and returns a verified human badge if valid.
+      summary: Verify an attestation token
+      description: Verifies a previously-issued attestation token against the nullifier registry. Returns a human-badge token on success.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -74,37 +103,52 @@ paths:
       responses:
         "200":
           description: Verification result
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/VerifyResponse"
-        "422":
-          description: Invalid proof payload
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "408": { $ref: "#/components/responses/RequestTimeout" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "429": { $ref: "#/components/responses/RateLimited" }
 
   /stats:
     get:
       operationId: getProtocolStats
       tags: [protocol]
       summary: Get global protocol statistics
-      description: Returns aggregate statistics about the protocol including total registered commitments, total verifications, and server uptime.
+      description: Returns aggregate statistics about the protocol.
       responses:
         "200":
           description: Protocol statistics
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestId"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ProtocolStats"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
 
   /nullifier/{hash}:
     get:
       operationId: checkNullifier
       tags: [protocol]
       summary: Check if a nullifier has been used
-      description: Returns whether a given nullifier hash has already been consumed, enabling duplicate-registration detection.
+      description: Returns whether a given nullifier hash has already been consumed.
       parameters:
         - name: hash
           in: path
@@ -115,12 +159,96 @@ paths:
       responses:
         "200":
           description: Nullifier status
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestId"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/NullifierStatus"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: API key (pk_test_… / pk_live_…)
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Opaque idempotency key (≤200 chars). Repeating the same key + body within 24h returns the original response.
+      schema:
+        type: string
+        maxLength: 200
+
+  headers:
+    XRequestId:
+      description: Unique id for this request, useful for support / log correlation.
+      schema: { type: string }
+    XRateLimitLimit:
+      description: Maximum requests for this bucket per minute.
+      schema: { type: integer }
+    XRateLimitRemaining:
+      description: Tokens remaining in the current bucket window.
+      schema: { type: integer }
+    XRateLimitReset:
+      description: Seconds until the bucket is fully refilled.
+      schema: { type: integer }
+    RetryAfter:
+      description: Seconds to wait before retrying.
+      schema: { type: integer }
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid API key.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    Forbidden:
+      description: Origin not allowed for this live API key.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    RequestTimeout:
+      description: Server-side request timeout.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    Conflict:
+      description: Conflicting state (duplicate nullifier or replayed Idempotency-Key with a different body).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    PayloadTooLarge:
+      description: Request body exceeded the 32 KB limit.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    ValidationError:
+      description: Request body did not pass schema validation.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    RateLimited:
+      description: Per-project rate limit exceeded.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+        X-RateLimit-Limit:
+          $ref: "#/components/headers/XRateLimitLimit"
+        X-RateLimit-Remaining:
+          $ref: "#/components/headers/XRateLimitRemaining"
+        X-RateLimit-Reset:
+          $ref: "#/components/headers/XRateLimitReset"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
   schemas:
     HealthStatus:
       type: object
@@ -153,16 +281,13 @@ components:
       properties:
         commitmentHash:
           type: string
-          description: The cryptographic commitment C = Hash(biometric, salt) stored on-chain
         nullifier:
           type: string
-          description: The nullifier N = Hash(biometric, appContext) preventing duplicate registrations
         registeredAt:
           type: string
           format: date-time
         proofGenerationMs:
           type: number
-          description: Simulated proof generation time in milliseconds
       required:
         - commitmentHash
         - nullifier
@@ -174,13 +299,10 @@ components:
       properties:
         proof:
           type: string
-          description: Simulated ZK proof string
         nullifier:
           type: string
-          description: The nullifier from the registration step
         appContext:
           type: string
-          description: Application context for which verification is requested
       required:
         - proof
         - nullifier
@@ -191,16 +313,13 @@ components:
       properties:
         verified:
           type: boolean
-          description: Whether the proof is valid and the person is confirmed human
         humanBadge:
           type: string
-          description: Cryptographic badge token the application can store to mark this user as verified human
         verifiedAt:
           type: string
           format: date-time
         message:
           type: string
-          description: Human-readable verification result message
       required:
         - verified
         - verifiedAt
@@ -211,19 +330,14 @@ components:
       properties:
         totalCommitments:
           type: integer
-          description: Total number of registered commitments
         totalVerifications:
           type: integer
-          description: Total number of successful verifications
         totalFailedVerifications:
           type: integer
-          description: Total number of failed verification attempts
         uptimeSeconds:
           type: number
-          description: Server uptime in seconds
         activeNullifiers:
           type: integer
-          description: Number of unique nullifiers currently registered
       required:
         - totalCommitments
         - totalVerifications
@@ -236,24 +350,50 @@ components:
       properties:
         hash:
           type: string
-          description: The queried nullifier hash
         used:
           type: boolean
-          description: Whether this nullifier has been consumed
         registeredAt:
           type: string
           format: date-time
-          description: When the nullifier was first registered (only present if used)
       required:
         - hash
         - used
 
-    ErrorResponse:
+    ErrorEnvelope:
       type: object
       properties:
         error:
-          type: string
-        details:
-          type: string
+          type: object
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code.
+              enum:
+                - missing_authorization
+                - invalid_api_key
+                - revoked_api_key
+                - forbidden_origin
+                - rate_limited
+                - idempotency_conflict
+                - payload_too_large
+                - request_timeout
+                - validation_error
+                - not_found
+                - conflict
+                - internal_error
+                - service_unavailable
+            message:
+              type: string
+              description: Human-readable explanation suitable for surfacing to developers.
+            request_id:
+              type: string
+              description: The X-Request-ID for this response. Quote this when contacting support.
+            details:
+              type: string
+              description: Optional extra context (e.g. Zod validation message).
+          required:
+            - code
+            - message
+            - request_id
       required:
         - error

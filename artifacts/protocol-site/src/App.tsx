@@ -2,6 +2,7 @@ import { type ReactElement, useEffect, useRef } from "react";
 import { Switch, Route, Router as WouterRouter, useLocation, Redirect } from "wouter";
 import { type Variants, AnimatePresence, motion } from "framer-motion";
 import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
+import { setAuthTokenGetter } from "@workspace/api-client-react";
 import {
   ClerkProvider,
   useClerk,
@@ -95,6 +96,25 @@ const pageVariants: Variants = {
   animate: { opacity: 1, y: 0, transition: { duration: 0.2, ease: [0.22, 1, 0.36, 1] } },
   exit: { opacity: 0, transition: { duration: 0.12, ease: [0.4, 0, 1, 1] } },
 };
+
+// Public demo API key bootstrap. The marketing pages (Demo, Stats,
+// Developers playground) hit /api/* endpoints that now require a Bearer
+// API key. We fetch the project-bound public demo key once and register
+// it on the shared fetch client. Dashboard routes are unaffected — they
+// use cookie-based Clerk auth and the apiKeyAuth middleware is mounted
+// only on the public protocol router.
+const apiBase = `${basePath}/api`;
+let demoKeyPromise: Promise<string | null> | null = null;
+function getDemoApiKey(): Promise<string | null> {
+  if (!demoKeyPromise) {
+    demoKeyPromise = fetch(`${apiBase}/_demo/api-key`, { credentials: "omit" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j: { apiKey?: string } | null) => j?.apiKey ?? null)
+      .catch(() => null);
+  }
+  return demoKeyPromise;
+}
+setAuthTokenGetter(() => getDemoApiKey());
 
 function ClerkQueryClientCacheInvalidator() {
   const { addListener } = useClerk();

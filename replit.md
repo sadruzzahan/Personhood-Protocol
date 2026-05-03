@@ -9,12 +9,23 @@ Full web presence for a cryptographic, privacy-preserving human verification pro
 ### `artifacts/api-server` — Protocol API
 Express 5 backend at port 8080. Persists data in Postgres via Drizzle ORM.
 
-Public endpoints (under `/api`, mounted unauthenticated for the prototype):
-- `POST /api/register` — register a biometric commitment, returns commitmentHash + nullifier
-- `POST /api/verify` — verify a proof, returns humanBadge token on success
-- `GET /api/stats` — protocol statistics (commitments, verifications, uptime)
-- `GET /api/nullifier/:hash` — check if a nullifier has been used
-- `GET /api/healthz` — health check
+Public endpoints (under `/api`, **all require `Authorization: Bearer pk_test_…` or `pk_live_…`**):
+- `POST /api/register` — register a biometric commitment. Honors `Idempotency-Key`. Write rate limit: 60/min/project.
+- `POST /api/verify` — verify a proof. Honors `Idempotency-Key`. Write rate limit: 60/min/project.
+- `GET /api/stats` — protocol statistics. Read rate limit: 600/min/project.
+- `GET /api/nullifier/:hash` — check if a nullifier has been used. Read rate limit: 600/min/project.
+- `GET /api/healthz` — health check (DB ping; 503 on failure). No auth.
+- `GET /api/readyz` — readiness probe. No auth.
+- `GET /api/_demo/api-key` — returns the public, project-bound demo key the marketing site uses for the playground/demo. No auth.
+
+Hardening surface (all wired into the public router):
+- API key auth via HMAC lookup with debounced `last_used_at` updates; live keys enforce `projects.allowed_origins`.
+- Per-project token-bucket rate limiting in Postgres (`rate_limit_buckets`); responses carry `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`, plus `Retry-After` on 429.
+- Idempotency cache (`idempotency_records`, 24h TTL, hourly cleanup). Replays return the original body with `Idempotent-Replayed: true`; mismatched body returns 409 `idempotency_conflict`.
+- Per-request `X-Request-ID` (UUID; only trusted from upstream if it's a UUID), included in every error envelope and pino log line.
+- Stable error envelope on every non-2xx: `{ "error": { code, message, request_id, details? } }`. Codes: `missing_authorization`, `invalid_api_key`, `revoked_api_key`, `forbidden_origin`, `rate_limited`, `idempotency_conflict`, `idempotency_in_progress`, `payload_too_large`, `request_timeout`, `validation_error`, `not_found`, `conflict`, `internal_error`, `service_unavailable`.
+- Helmet security headers (HSTS, X-Content-Type-Options, frame-options, etc.), `x-powered-by` disabled, JSON body cap 32 KB → 413, server-side timeout 10s → 408.
+- Request logging middleware persists every authenticated public request to `request_logs` (batched, queue-bounded; IPs stored at /24 (v4) or /64 (v6) prefix granularity).
 
 Internal dashboard endpoints (under `/api/internal/dashboard`, gated by Clerk session — never by API keys):
 - `GET /me` — current user + active organization
@@ -31,6 +42,8 @@ Internal dashboard endpoints (under `/api/internal/dashboard`, gated by Clerk se
 - `CLERK_PUBLISHABLE_KEY` / `VITE_CLERK_PUBLISHABLE_KEY` — Clerk publishable key (non-secret, identical value). Auto-set by `setupClerkWhitelabelAuth`.
 - `CLERK_SECRET_KEY` — Clerk backend secret. Auto-set by `setupClerkWhitelabelAuth`.
 - `API_KEY_HMAC_SECRET` — server-side HMAC secret used to hash issued API keys. **Required (≥16 chars) in production**; the server fails to start without it. Generate with `openssl rand -hex 32`. In development, a clearly-marked fallback is used and a warning is logged on startup.
+- `DEMO_API_KEY` — optional. Plaintext key (`pk_test_…`) the bootstrap should bind to the public demo project. If unset, a deterministic dev value is used. Anyone may use this key — it's bound only to the demo project (test env, no origin restrictions, normal rate limits).
+- `ENABLE_PUBLIC_DEMO_KEY` — set to `1` to expose `GET /api/_demo/api-key` in production deployments (the marketing-site deploy needs this). In non-production runtimes the endpoint is on by default.
 
 ### `artifacts/protocol-site` — Marketing & Developer Site
 React + Vite + Wouter + TanStack Query. Dark monochrome theme, electric cyan accent, Geist/Geist Mono fonts, no border radius. Preview at `/`.

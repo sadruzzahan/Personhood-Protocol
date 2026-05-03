@@ -18,9 +18,11 @@
     "cors": "^2",
     "drizzle-orm": "catalog:",
     "express": "^5",
+    "helmet": "^8.1.0",
     "http-proxy-middleware": "^3.0.5",
     "pino": "^9",
     "pino-http": "^10",
+    "uuid": "^14.0.0",
     "zod": "catalog:"
   },
   "devDependencies": {
@@ -28,6 +30,7 @@
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "catalog:",
+    "@types/uuid": "^11.0.0",
     "esbuild": "^0.27.3",
     "esbuild-plugin-pino": "^2.3.3",
     "pino-pretty": "^13",

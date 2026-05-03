@@ -18,8 +18,7 @@ machine-readable `error.code` and the `request_id` for log correlation.
  * OpenAPI spec version: 0.1.0
  */
 
-export interface VerifyRequest {
-  proof: string;
-  nullifier: string;
-  appContext: string;
-}
+/**
+ * Opaque idempotency key (≤200 chars). Repeating the same key + body within 24h returns the original response.
+ */
+export type IdempotencyKeyParameter = string;

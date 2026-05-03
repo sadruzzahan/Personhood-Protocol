@@ -305,6 +305,81 @@ export function Developers() {
           </p>
         </section>
 
+        {/* Auth, rate limits, idempotency, errors */}
+        <section className="mb-20" data-testid="section-auth-limits">
+          <h2 className="text-2xl font-medium mb-2">Authentication, limits, and errors</h2>
+          <p className="text-sm text-muted-foreground mb-6 max-w-3xl">
+            Production hardening surface for the API. Every public endpoint is rate-limited per
+            project, accepts <code className="text-primary">Idempotency-Key</code>, and returns a
+            stable error envelope you can switch on.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-0 border border-border">
+            <div className="p-6 border-b md:border-b-0 md:border-r border-border">
+              <p className="font-mono text-xs text-primary tracking-widest uppercase mb-3">Authorization</p>
+              <p className="text-sm text-muted-foreground mb-3">
+                Send your project key as a bearer token. Find or rotate keys at{" "}
+                <Link href="/dashboard" className="text-primary hover:underline">/dashboard</Link>.
+              </p>
+              <pre className="text-xs font-mono text-foreground/80 bg-card p-3 border border-border whitespace-pre-wrap">{`Authorization: Bearer pk_test_…   # development
+Authorization: Bearer pk_live_…   # production`}</pre>
+              <p className="text-xs font-mono text-muted-foreground mt-3">
+                Live keys enforce your project's allowed origins on browser requests.
+              </p>
+            </div>
+            <div className="p-6 border-b md:border-b-0 border-border">
+              <p className="font-mono text-xs text-primary tracking-widest uppercase mb-3">Rate limits</p>
+              <p className="text-sm text-muted-foreground mb-3">
+                Token-bucket per project. Every response carries the current state.
+              </p>
+              <ul className="text-xs font-mono text-muted-foreground space-y-1 mb-3">
+                <li><span className="text-primary">—</span> Writes (<code>/register</code>, <code>/verify</code>): 60 req/min</li>
+                <li><span className="text-primary">—</span> Reads (<code>/stats</code>, <code>/nullifier/:hash</code>): 600 req/min</li>
+              </ul>
+              <pre className="text-xs font-mono text-foreground/80 bg-card p-3 border border-border whitespace-pre-wrap">{`X-RateLimit-Limit: 60
+X-RateLimit-Remaining: 59
+X-RateLimit-Reset: 1
+Retry-After: 1   # only on 429`}</pre>
+            </div>
+            <div className="p-6 border-b md:border-b-0 md:border-r border-border md:border-t">
+              <p className="font-mono text-xs text-primary tracking-widest uppercase mb-3">Idempotency</p>
+              <p className="text-sm text-muted-foreground mb-3">
+                Send <code className="text-primary">Idempotency-Key: &lt;your-uuid&gt;</code> on any
+                POST. Repeating the request within 24 hours replays the original byte-for-byte;
+                replaying with a different body returns 409.
+              </p>
+              <pre className="text-xs font-mono text-foreground/80 bg-card p-3 border border-border whitespace-pre-wrap">{`POST /api/verify
+Authorization: Bearer pk_test_…
+Idempotency-Key: 9b2f…d1
+Content-Type: application/json
+
+{ "attestation_token": "…", … }`}</pre>
+            </div>
+            <div className="p-6 md:border-t border-border">
+              <p className="font-mono text-xs text-primary tracking-widest uppercase mb-3">Error envelope</p>
+              <p className="text-sm text-muted-foreground mb-3">
+                All non-2xx responses use the same shape with a stable{" "}
+                <code className="text-primary">error.code</code>.
+              </p>
+              <pre className="text-xs font-mono text-foreground/80 bg-card p-3 border border-border whitespace-pre-wrap">{`{
+  "error": {
+    "code": "rate_limited",
+    "message": "Rate limit exceeded …",
+    "request_id": "f9a1…",
+    "details": "(optional)"
+  }
+}`}</pre>
+              <p className="text-xs font-mono text-muted-foreground mt-3">
+                Codes: <code>missing_authorization</code>, <code>invalid_api_key</code>,{" "}
+                <code>revoked_api_key</code>, <code>forbidden_origin</code>,{" "}
+                <code>rate_limited</code>, <code>idempotency_conflict</code>,{" "}
+                <code>idempotency_in_progress</code>, <code>payload_too_large</code>,{" "}
+                <code>request_timeout</code>, <code>validation_error</code>,{" "}
+                <code>conflict</code>, <code>internal_error</code>.
+              </p>
+            </div>
+          </div>
+        </section>
+
         {/* SDK Code Snippets */}
         <section className="mb-20" data-testid="section-sdk">
           <h2 className="text-2xl font-medium mb-2">SDK Integration</h2>

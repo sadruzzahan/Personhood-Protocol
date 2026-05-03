@@ -17,9 +17,15 @@ machine-readable `error.code` and the `request_id` for log correlation.
 
  * OpenAPI spec version: 0.1.0
  */
+import type { ErrorEnvelopeErrorCode } from "./errorEnvelopeErrorCode";
 
-export interface VerifyRequest {
-  proof: string;
-  nullifier: string;
-  appContext: string;
-}
+export type ErrorEnvelopeError = {
+  /** Stable machine-readable error code. */
+  code: ErrorEnvelopeErrorCode;
+  /** Human-readable explanation suitable for surfacing to developers. */
+  message: string;
+  /** The X-Request-ID for this response. Quote this when contacting support. */
+  request_id: string;
+  /** Optional extra context (e.g. Zod validation message). */
+  details?: string;
+};

@@ -17,9 +17,8 @@ machine-readable `error.code` and the `request_id` for log correlation.
 
  * OpenAPI spec version: 0.1.0
  */
+import type { ErrorEnvelopeError } from "./errorEnvelopeError";
 
-export interface VerifyRequest {
-  proof: string;
-  nullifier: string;
-  appContext: string;
+export interface ErrorEnvelope {
+  error: ErrorEnvelopeError;
 }
