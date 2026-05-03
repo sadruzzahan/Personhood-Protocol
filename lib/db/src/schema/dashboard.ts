@@ -46,6 +46,13 @@ export const projectsTable = pgTable(
     environment: text("environment", { enum: ["test", "live"] })
       .notNull()
       .default("test"),
+    // Comma-separated list of origins allowed for browser-based use of the
+    // API keys issued under this project. Consumed by Task #8 auth middleware.
+    // Empty string means "no browser origins allowed" (server-to-server only).
+    allowedOrigins: text("allowed_origins").notNull().default(""),
+    // Optional webhook URL the project owner wants verification events
+    // delivered to. Wired in Task #10.
+    webhookUrl: text("webhook_url"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
@@ -69,6 +76,8 @@ export const apiKeysTable = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    // When set, identifies the new key that supersedes this one (rotation).
+    rotatedToKeyId: text("rotated_to_key_id"),
   },
   (t) => ({
     byProject: index("api_keys_project_idx").on(t.projectId),
@@ -85,10 +94,22 @@ export const requestLogsTable = pgTable(
     apiKeyId: text("api_key_id").references(() => apiKeysTable.id, {
       onDelete: "set null",
     }),
+    // HTTP method (GET/POST/...) for completeness.
     method: text("method").notNull(),
+    // The endpoint name (e.g. "register", "verify"). Set by Task #8 when it
+    // wires API key auth + logging into the public protocol routes.
+    endpoint: text("endpoint").notNull(),
+    // Full request path (e.g. "/api/verify"); kept alongside `endpoint`
+    // because endpoint is logical/normalized while path is raw.
     path: text("path").notNull(),
     statusCode: integer("status_code").notNull(),
-    durationMs: integer("duration_ms").notNull(),
+    latencyMs: integer("latency_ms").notNull(),
+    // Truncated client IP for privacy (e.g. "203.0.113.0/24" or "2001:db8::/64").
+    ipPrefix: text("ip_prefix"),
+    // Server-generated request id for correlation with logs/Sentry.
+    requestId: text("request_id"),
+    // Set on failures (e.g. "invalid_signature", "rate_limited"). Null on success.
+    errorCode: text("error_code"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

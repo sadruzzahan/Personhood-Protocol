@@ -198,7 +198,7 @@ router.get("/projects/:id", async (req, res) => {
       total: sql<number>`count(*)::int`,
       success: sql<number>`count(*) filter (where ${requestLogsTable.statusCode} < 400)::int`,
       failure: sql<number>`count(*) filter (where ${requestLogsTable.statusCode} >= 400)::int`,
-      avgDurationMs: sql<number>`coalesce(avg(${requestLogsTable.durationMs})::int, 0)`,
+      avgDurationMs: sql<number>`coalesce(avg(${requestLogsTable.latencyMs})::int, 0)`,
     })
     .from(requestLogsTable)
     .where(
@@ -230,7 +230,23 @@ router.get("/projects/:id", async (req, res) => {
 const UpdateProjectBody = z.object({
   name: z.string().min(1).max(80).optional(),
   environment: z.enum(["test", "live"]).optional(),
+  // Comma- or newline-separated origin list. We normalize before persisting.
+  allowedOrigins: z.string().max(2000).optional(),
+  webhookUrl: z
+    .string()
+    .max(500)
+    .url()
+    .optional()
+    .or(z.literal("")),
 });
+
+function normalizeOrigins(input: string): string {
+  return input
+    .split(/[\s,]+/)
+    .map((o) => o.trim())
+    .filter((o) => o.length > 0)
+    .join(",");
+}
 
 router.patch("/projects/:id", async (req, res) => {
   const userId = getUserId(req);
@@ -244,9 +260,18 @@ router.patch("/projects/:id", async (req, res) => {
     res.status(422).json({ error: "Invalid update payload", details: parsed.error.message });
     return;
   }
+  const patch: Record<string, unknown> = {};
+  if (parsed.data.name !== undefined) patch.name = parsed.data.name;
+  if (parsed.data.environment !== undefined) patch.environment = parsed.data.environment;
+  if (parsed.data.allowedOrigins !== undefined) {
+    patch.allowedOrigins = normalizeOrigins(parsed.data.allowedOrigins);
+  }
+  if (parsed.data.webhookUrl !== undefined) {
+    patch.webhookUrl = parsed.data.webhookUrl === "" ? null : parsed.data.webhookUrl;
+  }
   const [updated] = await db
     .update(projectsTable)
-    .set(parsed.data)
+    .set(patch)
     .where(eq(projectsTable.id, project.id))
     .returning();
   res.json({ project: updated });
@@ -333,6 +358,69 @@ router.post("/projects/:id/keys", async (req, res) => {
   });
 });
 
+router.post("/projects/:id/keys/:keyId/rotate", async (req, res) => {
+  const userId = getUserId(req);
+  const project = await assertProjectAccess(userId, req.params.id);
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+  const result = await db.transaction(async (tx) => {
+    const [old] = await tx
+      .select()
+      .from(apiKeysTable)
+      .where(
+        and(
+          eq(apiKeysTable.id, req.params.keyId),
+          eq(apiKeysTable.projectId, project.id),
+        ),
+      )
+      .limit(1);
+    if (!old) return null;
+    if (old.revokedAt) return { error: "Key is already revoked" };
+
+    const env = project.environment;
+    const { fullKey, prefix, last4, keyHash } = generateApiKey(env);
+    const newId_ = newId("key");
+    const [created] = await tx
+      .insert(apiKeysTable)
+      .values({
+        id: newId_,
+        projectId: project.id,
+        name: old.name,
+        prefix,
+        last4,
+        keyHash,
+        createdByUserId: userId,
+      })
+      .returning({
+        id: apiKeysTable.id,
+        name: apiKeysTable.name,
+        prefix: apiKeysTable.prefix,
+        last4: apiKeysTable.last4,
+        createdAt: apiKeysTable.createdAt,
+      });
+    await tx
+      .update(apiKeysTable)
+      .set({ revokedAt: new Date(), rotatedToKeyId: created.id })
+      .where(eq(apiKeysTable.id, old.id));
+    return { key: { ...created, fullKey } };
+  });
+  if (!result) {
+    res.status(404).json({ error: "API key not found" });
+    return;
+  }
+  if ("error" in result) {
+    res.status(409).json({ error: result.error });
+    return;
+  }
+  res.status(201).json({
+    ...result,
+    notice:
+      "Save this new key now — for your security, the full value will not be shown again. The previous key has been revoked.",
+  });
+});
+
 router.post("/projects/:id/keys/:keyId/revoke", async (req, res) => {
   const userId = getUserId(req);
   const project = await assertProjectAccess(userId, req.params.id);
@@ -367,15 +455,120 @@ router.get("/projects/:id/events", async (req, res) => {
   const rawLimit = Number(req.query.limit ?? 50);
   const limit =
     Number.isFinite(rawLimit) && rawLimit > 0
-      ? Math.min(Math.floor(rawLimit), 200)
+      ? Math.min(Math.floor(rawLimit), 50)
       : 50;
   const events = await db
-    .select()
+    .select({
+      id: requestLogsTable.id,
+      endpoint: requestLogsTable.endpoint,
+      statusCode: requestLogsTable.statusCode,
+      latencyMs: requestLogsTable.latencyMs,
+      ipPrefix: requestLogsTable.ipPrefix,
+      requestId: requestLogsTable.requestId,
+      errorCode: requestLogsTable.errorCode,
+      createdAt: requestLogsTable.createdAt,
+    })
     .from(requestLogsTable)
     .where(eq(requestLogsTable.projectId, project.id))
     .orderBy(desc(requestLogsTable.createdAt))
     .limit(limit);
   res.json({ events });
+});
+
+router.get("/projects/:id/usage", async (req, res) => {
+  const userId = getUserId(req);
+  const project = await assertProjectAccess(userId, req.params.id);
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+
+  const now = new Date();
+  const startOfTodayUtc = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+  );
+  const startOfMonthUtc = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
+  );
+  const sevenDaysAgo = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 6),
+  );
+
+  const [today] = await db
+    .select({
+      total: sql<number>`count(*)::int`,
+      success: sql<number>`count(*) filter (where ${requestLogsTable.statusCode} < 400)::int`,
+      failure: sql<number>`count(*) filter (where ${requestLogsTable.statusCode} >= 400)::int`,
+    })
+    .from(requestLogsTable)
+    .where(
+      and(
+        eq(requestLogsTable.projectId, project.id),
+        sql`${requestLogsTable.createdAt} >= ${startOfTodayUtc}`,
+      ),
+    );
+
+  const [month] = await db
+    .select({
+      total: sql<number>`count(*)::int`,
+      success: sql<number>`count(*) filter (where ${requestLogsTable.statusCode} < 400)::int`,
+      failure: sql<number>`count(*) filter (where ${requestLogsTable.statusCode} >= 400)::int`,
+    })
+    .from(requestLogsTable)
+    .where(
+      and(
+        eq(requestLogsTable.projectId, project.id),
+        sql`${requestLogsTable.createdAt} >= ${startOfMonthUtc}`,
+      ),
+    );
+
+  const series = await db
+    .select({
+      day: sql<string>`to_char(date_trunc('day', ${requestLogsTable.createdAt}) at time zone 'UTC', 'YYYY-MM-DD')`,
+      total: sql<number>`count(*)::int`,
+      success: sql<number>`count(*) filter (where ${requestLogsTable.statusCode} < 400)::int`,
+      failure: sql<number>`count(*) filter (where ${requestLogsTable.statusCode} >= 400)::int`,
+    })
+    .from(requestLogsTable)
+    .where(
+      and(
+        eq(requestLogsTable.projectId, project.id),
+        sql`${requestLogsTable.createdAt} >= ${sevenDaysAgo}`,
+      ),
+    )
+    .groupBy(sql`date_trunc('day', ${requestLogsTable.createdAt})`)
+    .orderBy(sql`date_trunc('day', ${requestLogsTable.createdAt})`);
+
+  // Densify last 7 days so the chart always renders 7 bars.
+  const byDay = new Map(series.map((r) => [r.day, r]));
+  const last7Days: Array<{ day: string; total: number; success: number; failure: number }> = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i),
+    );
+    const day = d.toISOString().slice(0, 10);
+    const row = byDay.get(day);
+    last7Days.push({
+      day,
+      total: row?.total ?? 0,
+      success: row?.success ?? 0,
+      failure: row?.failure ?? 0,
+    });
+  }
+
+  res.json({
+    today: {
+      totalRequests: today?.total ?? 0,
+      successRequests: today?.success ?? 0,
+      failureRequests: today?.failure ?? 0,
+    },
+    month: {
+      totalRequests: month?.total ?? 0,
+      successRequests: month?.success ?? 0,
+      failureRequests: month?.failure ?? 0,
+    },
+    last7Days,
+  });
 });
 
 export default router;

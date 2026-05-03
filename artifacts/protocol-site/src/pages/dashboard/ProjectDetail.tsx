@@ -78,7 +78,7 @@ function ProjectDetailContent() {
         ))}
       </div>
 
-      {tab === "overview" && <OverviewTab data={data} />}
+      {tab === "overview" && <OverviewTab projectId={projectId} data={data} />}
       {tab === "keys" && <KeysTab projectId={projectId} />}
       {tab === "events" && <EventsTab projectId={projectId} />}
       {tab === "settings" && (
@@ -99,15 +99,112 @@ function StatBox({ label, value, testId }: { label: string; value: string | numb
 
 type ProjectDetailData = Awaited<ReturnType<typeof dashboardApi.getProject>>;
 
-function OverviewTab({ data }: { data: ProjectDetailData }) {
-  const s = data.stats24h;
+function OverviewTab({ projectId, data }: { projectId: string; data: ProjectDetailData }) {
+  const usageQuery = useQuery({
+    queryKey: ["dashboard", "usage", projectId],
+    queryFn: () => dashboardApi.getUsage(projectId),
+  });
+
   return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4" data-testid="overview-tab">
-      <StatBox label="Active keys" value={data.activeKeyCount} testId="stat-active-keys" />
-      <StatBox label="Requests · 24h" value={s.totalRequests} testId="stat-total-requests" />
-      <StatBox label="Successful" value={s.successRequests} testId="stat-success-requests" />
-      <StatBox label="Failed" value={s.failureRequests} testId="stat-failure-requests" />
-      <StatBox label="Avg latency" value={`${s.avgDurationMs}ms`} testId="stat-avg-latency" />
+    <div data-testid="overview-tab">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-8">
+        <StatBox label="Active keys" value={data.activeKeyCount} testId="stat-active-keys" />
+        <StatBox label="Requests · 24h" value={data.stats24h.totalRequests} testId="stat-total-requests" />
+        <StatBox label="Successful · 24h" value={data.stats24h.successRequests} testId="stat-success-requests" />
+        <StatBox label="Failed · 24h" value={data.stats24h.failureRequests} testId="stat-failure-requests" />
+      </div>
+
+      <h2 className="text-xs font-mono uppercase tracking-widest text-muted-foreground mb-3">Usage</h2>
+      <UsagePanel query={usageQuery} />
+    </div>
+  );
+}
+
+function UsagePanel({
+  query,
+}: {
+  query: ReturnType<typeof useQuery<Awaited<ReturnType<typeof dashboardApi.getUsage>>, Error>>;
+}) {
+  if (query.isLoading) {
+    return (
+      <div className="border border-border bg-card p-6 font-mono text-sm text-muted-foreground" data-testid="usage-loading">
+        Loading usage…
+      </div>
+    );
+  }
+  if (query.isError) {
+    return (
+      <div className="border border-destructive/40 bg-destructive/10 text-destructive p-4 font-mono text-xs" data-testid="usage-error">
+        {(query.error as Error).message}
+      </div>
+    );
+  }
+  const u = query.data!;
+  const isEmpty = u.month.totalRequests === 0;
+  const max = Math.max(...u.last7Days.map((d) => d.total), 1);
+
+  return (
+    <div className="border border-border bg-card p-6" data-testid="usage-panel">
+      <div className="grid gap-4 sm:grid-cols-2 mb-6">
+        <UsageBucketBox label="Today" bucket={u.today} testId="usage-today" />
+        <UsageBucketBox label="Month to date" bucket={u.month} testId="usage-month" />
+      </div>
+      <p className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-2">
+        Last 7 days
+      </p>
+      {isEmpty ? (
+        <div className="border border-dashed border-border p-8 text-center" data-testid="usage-empty">
+          <p className="text-muted-foreground font-mono text-sm">
+            No requests recorded yet. Once Task #8 wires API key authentication
+            into the public endpoints, register/verify traffic for this
+            project will appear here.
+          </p>
+        </div>
+      ) : (
+        <div className="flex items-end gap-2 h-32" data-testid="usage-chart">
+          {u.last7Days.map((d) => {
+            const heightPct = (d.total / max) * 100;
+            const successPct = d.total > 0 ? (d.success / d.total) * 100 : 0;
+            return (
+              <div key={d.day} className="flex-1 flex flex-col items-center gap-1" data-testid={`usage-bar-${d.day}`}>
+                <div
+                  className="w-full bg-card border border-border relative flex flex-col-reverse"
+                  style={{ height: `${Math.max(heightPct, 2)}%` }}
+                  title={`${d.day}: ${d.total} total, ${d.success} success, ${d.failure} fail`}
+                >
+                  <div className="bg-primary" style={{ height: `${successPct}%` }} />
+                  <div className="bg-destructive flex-1" />
+                </div>
+                <span className="text-[10px] font-mono text-muted-foreground">
+                  {d.day.slice(5)}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UsageBucketBox({
+  label,
+  bucket,
+  testId,
+}: {
+  label: string;
+  bucket: { totalRequests: number; successRequests: number; failureRequests: number };
+  testId: string;
+}) {
+  return (
+    <div className="border border-border p-4" data-testid={testId}>
+      <p className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-2">{label}</p>
+      <p className="text-3xl font-medium font-mono mb-1">{bucket.totalRequests}</p>
+      <p className="text-xs font-mono text-muted-foreground">
+        <span className="text-primary">{bucket.successRequests} ok</span>
+        {" · "}
+        <span className="text-destructive">{bucket.failureRequests} fail</span>
+      </p>
     </div>
   );
 }
@@ -119,26 +216,34 @@ function KeysTab({ projectId }: { projectId: string }) {
     queryFn: () => dashboardApi.listKeys(projectId),
   });
   const [newName, setNewName] = useState("");
-  const [revealed, setRevealed] = useState<{ id: string; fullKey: string; name: string } | null>(null);
+  const [revealed, setRevealed] = useState<{ id: string; fullKey: string; name: string; rotated?: boolean } | null>(null);
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["dashboard", "keys", projectId] });
+    queryClient.invalidateQueries({ queryKey: ["dashboard", "project", projectId] });
+    queryClient.invalidateQueries({ queryKey: ["dashboard", "projects"] });
+  };
 
   const createMutation = useMutation({
     mutationFn: (name: string) => dashboardApi.createKey(projectId, { name }),
     onSuccess: (res) => {
       setRevealed({ id: res.key.id, fullKey: res.key.fullKey, name: res.key.name });
       setNewName("");
-      queryClient.invalidateQueries({ queryKey: ["dashboard", "keys", projectId] });
-      queryClient.invalidateQueries({ queryKey: ["dashboard", "project", projectId] });
-      queryClient.invalidateQueries({ queryKey: ["dashboard", "projects"] });
+      invalidate();
+    },
+  });
+
+  const rotateMutation = useMutation({
+    mutationFn: (keyId: string) => dashboardApi.rotateKey(projectId, keyId),
+    onSuccess: (res) => {
+      setRevealed({ id: res.key.id, fullKey: res.key.fullKey, name: res.key.name, rotated: true });
+      invalidate();
     },
   });
 
   const revokeMutation = useMutation({
     mutationFn: (keyId: string) => dashboardApi.revokeKey(projectId, keyId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["dashboard", "keys", projectId] });
-      queryClient.invalidateQueries({ queryKey: ["dashboard", "project", projectId] });
-      queryClient.invalidateQueries({ queryKey: ["dashboard", "projects"] });
-    },
+    onSuccess: invalidate,
   });
 
   return (
@@ -173,7 +278,7 @@ function KeysTab({ projectId }: { projectId: string }) {
       {revealed && (
         <div className="border border-primary bg-primary/10 p-4 mb-6" data-testid="banner-reveal-key">
           <p className="text-xs font-mono uppercase tracking-widest text-primary mb-2">
-            Save this key — it will not be shown again
+            {revealed.rotated ? "New key issued — old key revoked" : "Save this key — it will not be shown again"}
           </p>
           <div className="flex items-center gap-3 mb-3">
             <code
@@ -238,18 +343,32 @@ function KeysTab({ projectId }: { projectId: string }) {
                 </td>
                 <td className="px-3 py-2 text-right">
                   {!k.revokedAt && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (confirm(`Revoke key "${k.name}"? This cannot be undone.`)) {
-                          revokeMutation.mutate(k.id);
-                        }
-                      }}
-                      className="text-xs text-destructive hover:underline"
-                      data-testid={`button-revoke-${k.id}`}
-                    >
-                      Revoke
-                    </button>
+                    <span className="inline-flex gap-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (confirm(`Rotate key "${k.name}"? This issues a new secret and immediately revokes the old one.`)) {
+                            rotateMutation.mutate(k.id);
+                          }
+                        }}
+                        className="text-xs text-primary hover:underline"
+                        data-testid={`button-rotate-${k.id}`}
+                      >
+                        Rotate
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (confirm(`Revoke key "${k.name}"? This cannot be undone.`)) {
+                            revokeMutation.mutate(k.id);
+                          }
+                        }}
+                        className="text-xs text-destructive hover:underline"
+                        data-testid={`button-revoke-${k.id}`}
+                      >
+                        Revoke
+                      </button>
+                    </span>
                   )}
                 </td>
               </tr>
@@ -264,7 +383,7 @@ function KeysTab({ projectId }: { projectId: string }) {
 function EventsTab({ projectId }: { projectId: string }) {
   const eventsQuery = useQuery({
     queryKey: ["dashboard", "events", projectId],
-    queryFn: () => dashboardApi.listEvents(projectId, 100),
+    queryFn: () => dashboardApi.listEvents(projectId, 50),
     refetchInterval: 15000,
   });
 
@@ -277,7 +396,7 @@ function EventsTab({ projectId }: { projectId: string }) {
       <div className="border border-dashed border-border p-12 text-center" data-testid="empty-events">
         <p className="text-muted-foreground font-mono text-sm">
           No requests recorded yet. Once you start sending traffic with this project&apos;s
-          API keys, requests will appear here.
+          API keys, the last 50 register/verify calls will appear here.
         </p>
       </div>
     );
@@ -287,22 +406,24 @@ function EventsTab({ projectId }: { projectId: string }) {
       <thead className="bg-card">
         <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
           <th className="px-3 py-2">Time</th>
-          <th className="px-3 py-2">Method</th>
-          <th className="px-3 py-2">Path</th>
+          <th className="px-3 py-2">Endpoint</th>
           <th className="px-3 py-2">Status</th>
           <th className="px-3 py-2">Latency</th>
+          <th className="px-3 py-2">IP prefix</th>
+          <th className="px-3 py-2">Error</th>
         </tr>
       </thead>
       <tbody>
         {events.map((e) => (
           <tr key={e.id} className="border-t border-border" data-testid={`row-event-${e.id}`}>
             <td className="px-3 py-2 text-muted-foreground">{new Date(e.createdAt).toLocaleString()}</td>
-            <td className="px-3 py-2">{e.method}</td>
-            <td className="px-3 py-2 break-all">{e.path}</td>
+            <td className="px-3 py-2">{e.endpoint}</td>
             <td className={`px-3 py-2 ${e.statusCode >= 400 ? "text-destructive" : "text-primary"}`}>
               {e.statusCode}
             </td>
-            <td className="px-3 py-2 text-muted-foreground">{e.durationMs}ms</td>
+            <td className="px-3 py-2 text-muted-foreground">{e.latencyMs}ms</td>
+            <td className="px-3 py-2 text-muted-foreground">{e.ipPrefix ?? "—"}</td>
+            <td className="px-3 py-2 text-destructive">{e.errorCode ?? ""}</td>
           </tr>
         ))}
       </tbody>
@@ -318,17 +439,26 @@ function SettingsTab({ projectId, onDeleted }: { projectId: string; onDeleted: (
   });
   const [name, setName] = useState("");
   const [env, setEnv] = useState<"test" | "live">("test");
+  const [allowedOrigins, setAllowedOrigins] = useState("");
+  const [webhookUrl, setWebhookUrl] = useState("");
   const [initialized, setInitialized] = useState(false);
 
   if (projectQuery.data && !initialized) {
-    setName(projectQuery.data.project.name);
-    setEnv(projectQuery.data.project.environment);
+    const p = projectQuery.data.project;
+    setName(p.name);
+    setEnv(p.environment);
+    setAllowedOrigins(p.allowedOrigins ?? "");
+    setWebhookUrl(p.webhookUrl ?? "");
     setInitialized(true);
   }
 
   const updateMutation = useMutation({
-    mutationFn: (body: { name?: string; environment?: "test" | "live" }) =>
-      dashboardApi.updateProject(projectId, body),
+    mutationFn: (body: {
+      name?: string;
+      environment?: "test" | "live";
+      allowedOrigins?: string;
+      webhookUrl?: string;
+    }) => dashboardApi.updateProject(projectId, body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["dashboard", "project", projectId] });
       queryClient.invalidateQueries({ queryKey: ["dashboard", "projects"] });
@@ -348,7 +478,12 @@ function SettingsTab({ projectId, onDeleted }: { projectId: string; onDeleted: (
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          updateMutation.mutate({ name: name.trim(), environment: env });
+          updateMutation.mutate({
+            name: name.trim(),
+            environment: env,
+            allowedOrigins,
+            webhookUrl: webhookUrl.trim(),
+          });
         }}
         className="border border-border bg-card p-6 grid gap-4"
         data-testid="form-project-settings"
@@ -379,9 +514,47 @@ function SettingsTab({ projectId, onDeleted }: { projectId: string; onDeleted: (
             (<code>pk_test_</code> / <code>pk_live_</code>). Existing keys keep their original prefix.
           </p>
         </div>
+        <div className="grid gap-2">
+          <label className="text-xs font-mono uppercase tracking-widest text-muted-foreground">
+            Allowed origins (CORS)
+          </label>
+          <textarea
+            value={allowedOrigins}
+            onChange={(e) => setAllowedOrigins(e.target.value)}
+            rows={3}
+            placeholder="https://app.example.com, https://staging.example.com"
+            className="bg-background border border-border px-3 py-2 text-sm font-mono focus:outline-none focus:border-primary"
+            data-testid="input-allowed-origins"
+          />
+          <p className="text-xs font-mono text-muted-foreground">
+            Comma- or newline-separated. Leave empty for server-to-server only.
+            Enforced by the API key middleware (Task #8).
+          </p>
+        </div>
+        <div className="grid gap-2">
+          <label className="text-xs font-mono uppercase tracking-widest text-muted-foreground">
+            Webhook URL
+          </label>
+          <input
+            type="url"
+            value={webhookUrl}
+            onChange={(e) => setWebhookUrl(e.target.value)}
+            placeholder="https://example.com/webhooks/pop"
+            className="bg-background border border-border px-3 py-2 text-sm font-mono focus:outline-none focus:border-primary"
+            data-testid="input-webhook-url"
+          />
+          <p className="text-xs font-mono text-muted-foreground">
+            We&apos;ll POST verification events here. Wired in Task #10.
+          </p>
+        </div>
         <div className="flex items-center justify-end gap-3">
           {updateMutation.isSuccess && (
             <span className="text-xs font-mono text-primary" data-testid="text-save-success">Saved.</span>
+          )}
+          {updateMutation.isError && (
+            <span className="text-xs font-mono text-destructive" data-testid="text-save-error">
+              {(updateMutation.error as Error).message}
+            </span>
           )}
           <button
             type="submit"

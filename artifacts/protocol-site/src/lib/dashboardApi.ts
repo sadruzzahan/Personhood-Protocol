@@ -38,6 +38,8 @@ export interface ProjectInfo {
   name: string;
   slug: string;
   environment: "test" | "live";
+  allowedOrigins: string;
+  webhookUrl: string | null;
   createdAt: string;
   activeKeyCount?: number;
 }
@@ -54,13 +56,32 @@ export interface ApiKeyInfo {
 
 export interface RequestEvent {
   id: string;
-  projectId: string;
-  apiKeyId: string | null;
-  method: string;
-  path: string;
+  endpoint: string;
   statusCode: number;
-  durationMs: number;
+  latencyMs: number;
+  ipPrefix: string | null;
+  requestId: string | null;
+  errorCode: string | null;
   createdAt: string;
+}
+
+export interface UsageBucket {
+  totalRequests: number;
+  successRequests: number;
+  failureRequests: number;
+}
+
+export interface UsageDay {
+  day: string;
+  total: number;
+  success: number;
+  failure: number;
+}
+
+export interface UsageResponse {
+  today: UsageBucket;
+  month: UsageBucket;
+  last7Days: UsageDay[];
 }
 
 export interface ProjectStats24h {
@@ -89,7 +110,15 @@ export const dashboardApi = {
       stats24h: ProjectStats24h;
       activeKeyCount: number;
     }>(`/projects/${id}`),
-  updateProject: (id: string, body: { name?: string; environment?: "test" | "live" }) =>
+  updateProject: (
+    id: string,
+    body: {
+      name?: string;
+      environment?: "test" | "live";
+      allowedOrigins?: string;
+      webhookUrl?: string;
+    },
+  ) =>
     request<{ project: ProjectInfo }>(`/projects/${id}`, {
       method: "PATCH",
       body: JSON.stringify(body),
@@ -110,8 +139,15 @@ export const dashboardApi = {
     request<{ ok: true }>(`/projects/${projectId}/keys/${keyId}/revoke`, {
       method: "POST",
     }),
+  rotateKey: (projectId: string, keyId: string) =>
+    request<{
+      key: ApiKeyInfo & { fullKey: string };
+      notice: string;
+    }>(`/projects/${projectId}/keys/${keyId}/rotate`, { method: "POST" }),
   listEvents: (projectId: string, limit = 50) =>
     request<{ events: RequestEvent[] }>(
       `/projects/${projectId}/events?limit=${limit}`,
     ),
+  getUsage: (projectId: string) =>
+    request<UsageResponse>(`/projects/${projectId}/usage`),
 };

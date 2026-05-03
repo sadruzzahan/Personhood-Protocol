@@ -19,10 +19,18 @@ Public endpoints (under `/api`, mounted unauthenticated for the prototype):
 Internal dashboard endpoints (under `/api/internal/dashboard`, gated by Clerk session — never by API keys):
 - `GET /me` — current user + active organization
 - `GET|POST /projects` — list/create projects
-- `GET|PATCH|DELETE /projects/:id` — project detail (with 24h stats), update, delete
+- `GET|PATCH|DELETE /projects/:id` — project detail (with 24h stats), update, delete. PATCH accepts `name`, `environment`, `allowedOrigins`, `webhookUrl`.
 - `GET|POST /projects/:id/keys` — list/create API keys (full key shown once on create)
+- `POST /projects/:id/keys/:keyId/rotate` — atomically issue a new key and revoke the old one
 - `POST /projects/:id/keys/:keyId/revoke` — revoke a key
-- `GET /projects/:id/events` — recent request log entries
+- `GET /projects/:id/events` — last 50 register/verify request log entries (timestamp, endpoint, status, latency, IP prefix, error code)
+- `GET /projects/:id/usage` — usage panel data: today + month-to-date totals (success/failure split) and a 7-day densified series
+
+### Required environment variables
+- `DATABASE_URL` — Postgres connection string (auto-provisioned by Replit DB).
+- `CLERK_PUBLISHABLE_KEY` / `VITE_CLERK_PUBLISHABLE_KEY` — Clerk publishable key (non-secret, identical value). Auto-set by `setupClerkWhitelabelAuth`.
+- `CLERK_SECRET_KEY` — Clerk backend secret. Auto-set by `setupClerkWhitelabelAuth`.
+- `API_KEY_HMAC_SECRET` — server-side HMAC secret used to hash issued API keys. **Required (≥16 chars) in production**; the server fails to start without it. Generate with `openssl rand -hex 32`. In development, a clearly-marked fallback is used and a warning is logged on startup.
 
 ### `artifacts/protocol-site` — Marketing & Developer Site
 React + Vite + Wouter + TanStack Query. Dark monochrome theme, electric cyan accent, Geist/Geist Mono fonts, no border radius. Preview at `/`.
