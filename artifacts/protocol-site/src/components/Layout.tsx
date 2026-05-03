@@ -55,9 +55,19 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </div>
         </div>
 
+        {/* Mobile menu backdrop */}
+        {mobileOpen && (
+          <div
+            className="md:hidden fixed inset-0 top-14 bg-background/60 backdrop-blur-sm z-40"
+            onClick={closeMobile}
+            aria-hidden="true"
+            data-testid="mobile-menu-backdrop"
+          />
+        )}
+
         {/* Mobile menu */}
         {mobileOpen && (
-          <div className="md:hidden border-t border-border bg-background" data-testid="mobile-menu">
+          <div className="md:hidden relative z-50 border-t border-border bg-background" data-testid="mobile-menu">
             <nav className="flex flex-col py-2">
               {NAV_LINKS.map(link => (
                 <Link
