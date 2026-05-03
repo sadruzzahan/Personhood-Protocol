@@ -1,5 +1,7 @@
 import { Router, type IRouter } from "express";
 import { createHash, randomBytes } from "node:crypto";
+import { eq, sql } from "drizzle-orm";
+import { db, commitmentsTable, verificationStatsTable } from "@workspace/db";
 import {
   RegisterCommitmentBody,
   RegisterCommitmentResponse,
@@ -10,19 +12,40 @@ import {
   CheckNullifierResponse,
 } from "@workspace/api-zod";
 
-interface CommitmentRecord {
-  commitmentHash: string;
-  nullifier: string;
-  appContext: string;
-  registeredAt: Date;
-}
-
-const commitmentsByHash = new Map<string, CommitmentRecord>();
-const nullifiers = new Map<string, CommitmentRecord>();
+const STATS_ROW_ID = 1;
 const serverStartedAt = Date.now();
 
-let totalVerifications = 0;
-let totalFailedVerifications = 0;
+async function incrementStats(field: "success" | "failure"): Promise<void> {
+  if (field === "success") {
+    await db
+      .insert(verificationStatsTable)
+      .values({
+        id: STATS_ROW_ID,
+        totalVerifications: 1,
+        totalFailedVerifications: 0,
+      })
+      .onConflictDoUpdate({
+        target: verificationStatsTable.id,
+        set: {
+          totalVerifications: sql`${verificationStatsTable.totalVerifications} + 1`,
+        },
+      });
+  } else {
+    await db
+      .insert(verificationStatsTable)
+      .values({
+        id: STATS_ROW_ID,
+        totalVerifications: 0,
+        totalFailedVerifications: 1,
+      })
+      .onConflictDoUpdate({
+        target: verificationStatsTable.id,
+        set: {
+          totalFailedVerifications: sql`${verificationStatsTable.totalFailedVerifications} + 1`,
+        },
+      });
+  }
+}
 
 function sha256Hex(input: string): string {
   return createHash("sha256").update(input).digest("hex");
@@ -30,7 +53,7 @@ function sha256Hex(input: string): string {
 
 const router: IRouter = Router();
 
-router.post("/register", (req, res) => {
+router.post("/register", async (req, res) => {
   const parsed = RegisterCommitmentBody.safeParse(req.body);
   if (!parsed.success) {
     return res.status(422).json({
@@ -44,7 +67,13 @@ router.post("/register", (req, res) => {
   const commitmentHash = sha256Hex(`${biometricData}|${salt}`);
   const nullifier = sha256Hex(`${biometricData}|${appContext}`);
 
-  if (nullifiers.has(nullifier)) {
+  const existing = await db
+    .select({ nullifier: commitmentsTable.nullifier })
+    .from(commitmentsTable)
+    .where(eq(commitmentsTable.nullifier, nullifier))
+    .limit(1);
+
+  if (existing.length > 0) {
     return res.status(409).json({
       error: "Nullifier already registered",
       details:
@@ -52,28 +81,44 @@ router.post("/register", (req, res) => {
     });
   }
 
-  const record: CommitmentRecord = {
-    commitmentHash,
-    nullifier,
-    appContext,
-    registeredAt: new Date(),
-  };
-  commitmentsByHash.set(commitmentHash, record);
-  nullifiers.set(nullifier, record);
+  const registeredAt = new Date();
+
+  try {
+    await db.insert(commitmentsTable).values({
+      commitmentHash,
+      nullifier,
+      appContext,
+      registeredAt,
+    });
+  } catch (err: unknown) {
+    if (
+      typeof err === "object" &&
+      err !== null &&
+      "code" in err &&
+      (err as { code?: string }).code === "23505"
+    ) {
+      return res.status(409).json({
+        error: "Nullifier already registered",
+        details:
+          "A commitment with this biometric/app-context pair already exists. Each human can register once per app context.",
+      });
+    }
+    throw err;
+  }
 
   const proofGenerationMs = 2000 + Math.floor(Math.random() * 1200);
 
   const response = RegisterCommitmentResponse.parse({
     commitmentHash,
     nullifier,
-    registeredAt: record.registeredAt,
+    registeredAt,
     proofGenerationMs,
   });
 
   return res.json(response);
 });
 
-router.post("/verify", (req, res) => {
+router.post("/verify", async (req, res) => {
   const parsed = VerifyProofBody.safeParse(req.body);
   if (!parsed.success) {
     return res.status(422).json({
@@ -83,14 +128,19 @@ router.post("/verify", (req, res) => {
   }
 
   const { proof, nullifier, appContext } = parsed.data;
-  const record = nullifiers.get(nullifier);
+  const found = await db
+    .select()
+    .from(commitmentsTable)
+    .where(eq(commitmentsTable.nullifier, nullifier))
+    .limit(1);
+  const record = found[0];
   const now = new Date();
 
   const validProofShape = proof.length >= 16;
   const contextMatches = record?.appContext === appContext;
 
   if (!record || !validProofShape || !contextMatches) {
-    totalFailedVerifications += 1;
+    await incrementStats("failure");
     const response = VerifyProofResponse.parse({
       verified: false,
       verifiedAt: now,
@@ -103,7 +153,7 @@ router.post("/verify", (req, res) => {
     return res.json(response);
   }
 
-  totalVerifications += 1;
+  await incrementStats("success");
   const humanBadge = sha256Hex(`badge|${nullifier}|${now.toISOString()}`);
 
   const response = VerifyProofResponse.parse({
@@ -115,19 +165,32 @@ router.post("/verify", (req, res) => {
   return res.json(response);
 });
 
-router.get("/stats", (_req, res) => {
+router.get("/stats", async (_req, res) => {
   const uptimeSeconds = (Date.now() - serverStartedAt) / 1000;
+
+  const [counts] = await db
+    .select({
+      totalCommitments: sql<number>`count(*)::int`,
+    })
+    .from(commitmentsTable);
+
+  const [stats] = await db
+    .select()
+    .from(verificationStatsTable)
+    .where(eq(verificationStatsTable.id, STATS_ROW_ID))
+    .limit(1);
+
   const response = GetProtocolStatsResponse.parse({
-    totalCommitments: commitmentsByHash.size,
-    totalVerifications,
-    totalFailedVerifications,
+    totalCommitments: counts?.totalCommitments ?? 0,
+    totalVerifications: stats?.totalVerifications ?? 0,
+    totalFailedVerifications: stats?.totalFailedVerifications ?? 0,
     uptimeSeconds,
-    activeNullifiers: nullifiers.size,
+    activeNullifiers: counts?.totalCommitments ?? 0,
   });
   res.json(response);
 });
 
-router.get("/nullifier/:hash", (req, res) => {
+router.get("/nullifier/:hash", async (req, res) => {
   const parsed = CheckNullifierParams.safeParse(req.params);
   if (!parsed.success) {
     return res.status(422).json({
@@ -137,7 +200,12 @@ router.get("/nullifier/:hash", (req, res) => {
   }
 
   const { hash } = parsed.data;
-  const record = nullifiers.get(hash);
+  const found = await db
+    .select()
+    .from(commitmentsTable)
+    .where(eq(commitmentsTable.nullifier, hash))
+    .limit(1);
+  const record = found[0];
   const response = CheckNullifierResponse.parse({
     hash,
     used: !!record,
