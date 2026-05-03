@@ -44,6 +44,10 @@ export function errorHandler(
     });
   }
 
+  // Centralize error_code attribution so request_logs always reflects the
+  // typed code, regardless of which middleware/route raised it.
+  res.locals.errorCode = apiErr.code;
+
   if (!res.headersSent) {
     res.status(apiErr.status).json(envelope(apiErr, requestId));
   }

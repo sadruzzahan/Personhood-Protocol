@@ -26,9 +26,13 @@ interface ConsumeResult {
 
 async function consumeToken(
   projectId: string,
+  apiKeyId: string,
   kind: BucketKind,
 ): Promise<ConsumeResult> {
   const cfg = CONFIG[kind];
+  // Per-API-key buckets: same project with multiple keys gets independent
+  // limits per key, matching the documented contract.
+  const bucketKey = `${kind}:${apiKeyId}`;
   // Step 1: lazily refill the bucket. New rows are seeded at full capacity.
   // After this statement the row reflects post-refill tokens (no decrement yet).
   const refilled = await db.execute<{
@@ -37,7 +41,7 @@ async function consumeToken(
     refill_rate: string;
   }>(sql`
     INSERT INTO rate_limit_buckets (project_id, bucket_key, tokens, capacity, refill_rate, last_refill_at)
-    VALUES (${projectId}, ${kind}, ${cfg.capacity}, ${cfg.capacity}, ${cfg.refillRate}, now())
+    VALUES (${projectId}, ${bucketKey}, ${cfg.capacity}, ${cfg.capacity}, ${cfg.refillRate}, now())
     ON CONFLICT (project_id, bucket_key) DO UPDATE
       SET tokens = LEAST(
             rate_limit_buckets.capacity,
@@ -63,7 +67,7 @@ async function consumeToken(
       UPDATE rate_limit_buckets
          SET tokens = tokens - 1
        WHERE project_id = ${projectId}
-         AND bucket_key = ${kind}
+         AND bucket_key = ${bucketKey}
          AND tokens >= 1
        RETURNING tokens
     `);
@@ -92,7 +96,11 @@ export function rateLimit(kind: BucketKind) {
       return;
     }
     try {
-      const r = await consumeToken(req.apiContext.project.id, kind);
+      const r = await consumeToken(
+        req.apiContext.project.id,
+        req.apiContext.keyId,
+        kind,
+      );
       res.setHeader("X-RateLimit-Limit", String(r.capacity));
       res.setHeader("X-RateLimit-Remaining", String(r.remaining));
       res.setHeader("X-RateLimit-Reset", String(r.resetSeconds));
@@ -102,7 +110,7 @@ export function rateLimit(kind: BucketKind) {
           new ApiError({
             code: "rate_limited",
             status: 429,
-            message: `Rate limit exceeded for this project. Retry in ${r.resetSeconds}s.`,
+            message: `Rate limit exceeded for this API key. Retry in ${r.resetSeconds}s.`,
           }),
         );
         return;

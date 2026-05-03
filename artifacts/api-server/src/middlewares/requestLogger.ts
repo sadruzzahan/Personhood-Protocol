@@ -4,7 +4,7 @@ import { logger } from "../lib/logger";
 import { newId } from "../lib/ids";
 
 interface QueuedLog {
-  projectId: string;
+  projectId: string | null;
   apiKeyId: string | null;
   method: string;
   endpoint: string;
@@ -79,23 +79,29 @@ function endpointFor(method: string, routePath: string): string {
 }
 
 /**
- * Mounted on the public router. Emits one row per request to request_logs.
- * Logs only when a request is associated with an apiContext (i.e. a key
- * was presented or — for 401s — was attempted). Authentication failures
- * before req.apiContext is set are not attributed to a project and are
- * therefore intentionally not persisted.
+ * Mounted on the public router *before* requireApiKey so that auth-rejected
+ * requests are also persisted (with project_id = null). Project attribution
+ * is filled in if/when apiKeyAuth populates req.apiContext.
+ *
+ * Skips internal observability paths (/_demo/api-key, /healthz, /readyz)
+ * because they don't carry any per-project signal worth aggregating.
  */
+const SKIP_PATHS = new Set(["/_demo/api-key", "/healthz", "/readyz"]);
+
 export function requestLoggerMiddleware(
   req: Request,
   res: Response,
   next: NextFunction,
 ): void {
+  if (SKIP_PATHS.has(req.path)) {
+    next();
+    return;
+  }
   const start = Date.now();
   res.on("finish", () => {
-    if (!req.apiContext) return;
     const log: QueuedLog = {
-      projectId: req.apiContext.project.id,
-      apiKeyId: req.apiContext.keyId,
+      projectId: req.apiContext?.project.id ?? null,
+      apiKeyId: req.apiContext?.keyId ?? null,
       method: req.method,
       endpoint: endpointFor(req.method, req.baseUrl + (req.route?.path ?? req.path)),
       path: req.originalUrl.split("?")[0],

@@ -88,9 +88,11 @@ export const requestLogsTable = pgTable(
   "request_logs",
   {
     id: text("id").primaryKey(),
-    projectId: text("project_id")
-      .notNull()
-      .references(() => projectsTable.id, { onDelete: "cascade" }),
+    // Nullable so we can also persist auth-failed requests (no project
+    // attribution) for observability of denied traffic.
+    projectId: text("project_id").references(() => projectsTable.id, {
+      onDelete: "cascade",
+    }),
     apiKeyId: text("api_key_id").references(() => apiKeysTable.id, {
       onDelete: "set null",
     }),

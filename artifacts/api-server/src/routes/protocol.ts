@@ -60,8 +60,9 @@ const router: IRouter = Router();
 
 // Every public endpoint requires an API key, is rate limited, and is logged
 // to request_logs. POST endpoints additionally honor Idempotency-Key.
-router.use(requireApiKey);
+// Logger first so auth failures are also persisted (project_id = null).
 router.use(requestLoggerMiddleware);
+router.use(requireApiKey);
 
 router.post(
   "/register",
@@ -71,7 +72,6 @@ router.post(
     try {
       const parsed = RegisterCommitmentBody.safeParse(req.body);
       if (!parsed.success) {
-        res.locals.errorCode = "validation_error";
         throw new ApiError({
           code: "validation_error",
           status: 422,
@@ -92,7 +92,6 @@ router.post(
         .limit(1);
 
       if (existing.length > 0) {
-        res.locals.errorCode = "conflict";
         throw new ApiError({
           code: "conflict",
           status: 409,
@@ -117,7 +116,6 @@ router.post(
           "code" in err &&
           (err as { code?: string }).code === "23505"
         ) {
-          res.locals.errorCode = "conflict";
           throw new ApiError({
             code: "conflict",
             status: 409,
@@ -149,7 +147,6 @@ router.post(
     try {
       const parsed = VerifyProofBody.safeParse(req.body);
       if (!parsed.success) {
-        res.locals.errorCode = "validation_error";
         throw new ApiError({
           code: "validation_error",
           status: 422,
@@ -231,7 +228,6 @@ router.get("/nullifier/:hash", rateLimit("read"), async (req, res, next) => {
   try {
     const parsed = CheckNullifierParams.safeParse(req.params);
     if (!parsed.success) {
-      res.locals.errorCode = "validation_error";
       throw new ApiError({
         code: "validation_error",
         status: 422,
