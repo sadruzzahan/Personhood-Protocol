@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useLocation } from "wouter";
 import { useRegisterCommitment, useVerifyProof, useHealthCheck, getHealthCheckQueryKey } from "@workspace/api-client-react";
 
 type Step = 0 | 1 | 2 | 3 | 4;
@@ -81,6 +82,7 @@ export function Demo() {
   const [error, setError] = useState<string | null>(null);
   const biometricData = useRef(randomHex(32));
 
+  const [, setLocation] = useLocation();
   const registerMutation = useRegisterCommitment();
   const verifyMutation = useVerifyProof();
   const [livenessApiStatus, setLivenessApiStatus] = useState<"idle" | "checking" | "ok" | "error">("idle");
@@ -327,6 +329,15 @@ export function Demo() {
             <div className="text-xs font-mono text-muted-foreground">
               This token can be stored by any application to mark your account as a verified unique human.
             </div>
+            {commitmentResult && (
+              <button
+                className="w-full border border-primary text-primary py-3 font-mono text-sm hover:bg-primary/10 transition-colors"
+                onClick={() => setLocation(`/developers?nullifier=${encodeURIComponent(commitmentResult.nullifier)}`)}
+                data-testid="button-inspect-nullifier"
+              >
+                Inspect nullifier in API playground
+              </button>
+            )}
             <button
               className="w-full border border-border py-3 font-mono text-sm hover:border-primary/50 hover:text-primary transition-colors"
               onClick={reset}

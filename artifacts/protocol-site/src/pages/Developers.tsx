@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useSearch } from "wouter";
 import {
   useCheckNullifier,
   getCheckNullifierQueryKey,
@@ -180,10 +181,27 @@ function MethodBadge({ method }: { method: string }) {
 }
 
 export function Developers() {
+  const search = useSearch();
+  const initialNullifier = (() => {
+    const params = new URLSearchParams(search);
+    return params.get("nullifier")?.trim() ?? "";
+  })();
   const [lang, setLang] = useState<keyof typeof CODE_SNIPPETS>("JavaScript");
-  const [nullifierInput, setNullifierInput] = useState("");
-  const [queryHash, setQueryHash] = useState("");
+  const [nullifierInput, setNullifierInput] = useState(initialNullifier);
+  const [queryHash, setQueryHash] = useState(initialNullifier);
   const [playgroundTab, setPlaygroundTab] = useState<"nullifier" | "verify">("nullifier");
+  const lastSyncedNullifier = useRef(initialNullifier);
+
+  useEffect(() => {
+    const params = new URLSearchParams(search);
+    const next = params.get("nullifier")?.trim() ?? "";
+    if (next && next !== lastSyncedNullifier.current) {
+      lastSyncedNullifier.current = next;
+      setNullifierInput(next);
+      setQueryHash(next);
+      setPlaygroundTab("nullifier");
+    }
+  }, [search]);
   const [verifyProof, setVerifyProof] = useState("");
   const [verifyNullifier, setVerifyNullifier] = useState("");
   const [verifyContext, setVerifyContext] = useState("proof-of-personhood-demo");
