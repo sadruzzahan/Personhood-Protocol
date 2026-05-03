@@ -100,6 +100,10 @@ router.post(
       const inquiryId = inquiry?.id;
       const status = mapStatus(inquiry?.attributes?.status);
       const accountId = inquiry?.relationships?.account?.data?.id ?? null;
+      const referenceId =
+        (inquiry?.attributes as { "reference-id"?: string } | undefined)?.[
+          "reference-id"
+        ] ?? null;
       if (!eventId || !inquiryId || inquiry?.type !== "inquiry") {
         // We acknowledge non-inquiry events so Persona doesn't retry them.
         res.status(200).json({ received: true, ignored: true });
@@ -112,12 +116,40 @@ router.post(
         .where(eq(personaInquiriesTable.inquiryId, inquiryId))
         .limit(1);
 
+      const subjectId = accountId ? deriveSubjectId(accountId) : existing?.subjectId ?? null;
+
       if (!existing) {
-        // Webhook arrived before /api/inquiries created the row, or for an
-        // inquiry created out-of-band. Acknowledge but do not insert: we
-        // don't know which project to attribute it to.
-        logger.warn({ inquiryId }, "Persona webhook for unknown inquiry");
-        res.status(200).json({ received: true, ignored: "unknown_inquiry" });
+        // Webhook arrived before /api/inquiries persisted the row, or the
+        // inquiry was created out-of-band. The webhook is the source of
+        // truth, so we upsert: the project id is recovered from the
+        // `${projectId}:${nonce}` reference id we set when creating the
+        // inquiry. If we cannot recover it, we log + 200 so Persona stops
+        // retrying — re-attribution can be done from raw_payload manually.
+        const inferredProjectId =
+          referenceId && referenceId.includes(":")
+            ? referenceId.split(":", 1)[0]
+            : null;
+        if (!inferredProjectId) {
+          logger.warn(
+            { inquiryId, referenceId },
+            "Persona webhook for unknown inquiry with unparseable reference id",
+          );
+          res.status(200).json({ received: true, ignored: "unknown_project" });
+          return;
+        }
+        await db
+          .insert(personaInquiriesTable)
+          .values({
+            inquiryId,
+            projectId: inferredProjectId,
+            status,
+            subjectId,
+            rawPayload: event as unknown as Record<string, unknown>,
+            receivedEventIds: [eventId],
+            vendor: "persona",
+          })
+          .onConflictDoNothing();
+        res.status(200).json({ received: true, upserted: true });
         return;
       }
 
@@ -128,7 +160,6 @@ router.post(
         return;
       }
 
-      const subjectId = accountId ? deriveSubjectId(accountId) : existing.subjectId;
       await db
         .update(personaInquiriesTable)
         .set({

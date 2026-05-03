@@ -385,6 +385,14 @@ components:
           format: uri
           description: Where the hosted flow should send the user after completion.
           maxLength: 512
+        mode:
+          type: string
+          enum: [mock, persona]
+          description: |
+            Optional explicit vendor selection. `mock` runs the auto-approving in-process
+            simulator (works without external credentials); `persona` opens the real Persona
+            hosted flow (requires PERSONA_API_KEY + PERSONA_TEMPLATE_ID server-side). When
+            omitted the server falls back to its default vendor.
 
     InquirySession:
       type: object

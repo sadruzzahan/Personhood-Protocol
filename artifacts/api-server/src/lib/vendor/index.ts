@@ -31,9 +31,9 @@ export interface VerificationVendor {
 let cached: VerificationVendor | null = null;
 
 /**
- * Selection rule: if a vendor explicitly self-reports configured, use it.
- * Otherwise fall back to the mock vendor so the demo flow keeps working
- * without any external account setup. Override with VERIFICATION_VENDOR.
+ * Default vendor selection. Honors VERIFICATION_VENDOR override, otherwise
+ * uses Persona when configured, otherwise the mock. Per-request callers
+ * can request a specific vendor via getVendorByName().
  */
 export function getVendor(): VerificationVendor {
   if (cached) return cached;
@@ -48,6 +48,18 @@ export function getVendor(): VerificationVendor {
   }
   cached = personaVendor.isConfigured() ? personaVendor : mockVendor;
   return cached;
+}
+
+/**
+ * Per-request vendor lookup. Used by /api/inquiries when the client
+ * explicitly requests a mode (the Demo's "Quick simulation" vs "Real
+ * verification (sandbox)" toggle). Returns null if the requested vendor
+ * is not configured for this environment.
+ */
+export function getVendorByName(name: string): VerificationVendor | null {
+  if (name === "mock") return mockVendor;
+  if (name === "persona") return personaVendor.isConfigured() ? personaVendor : null;
+  return null;
 }
 
 export { mockVendor, personaVendor };

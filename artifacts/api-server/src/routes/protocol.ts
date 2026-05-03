@@ -19,7 +19,7 @@ import { idempotencyMiddleware } from "../middlewares/idempotency";
 import { requestLoggerMiddleware } from "../middlewares/requestLogger";
 import { deriveNullifier, deriveCommitment } from "../lib/nullifier";
 import { signHumanBadge, verifyHumanBadge } from "../lib/jwt";
-import { getVendor } from "../lib/vendor";
+import { getVendorByName } from "../lib/vendor";
 
 const STATS_ROW_ID = 1;
 const serverStartedAt = Date.now();
@@ -114,9 +114,12 @@ router.post("/register", ...publicWrite, async (req, res, next) => {
     let status = inquiry.status;
     if (status !== "approved" || !subjectId) {
       try {
-        const vendor = getVendor();
-        const latest = await vendor.getInquiry(inquiryId);
-        if (latest.subjectId && latest.status === "approved") {
+        // Use the vendor that was selected when the inquiry was created,
+        // not the server default — they may differ if the caller chose
+        // an explicit `mode` at /inquiries time.
+        const vendor = getVendorByName(inquiry.vendor);
+        const latest = vendor ? await vendor.getInquiry(inquiryId) : null;
+        if (latest && latest.subjectId && latest.status === "approved") {
           subjectId = latest.subjectId;
           status = "approved";
           await db
@@ -127,7 +130,7 @@ router.post("/register", ...publicWrite, async (req, res, next) => {
               updatedAt: new Date(),
             })
             .where(eq(personaInquiriesTable.inquiryId, inquiryId));
-        } else {
+        } else if (latest) {
           status = latest.status;
         }
       } catch {
@@ -171,6 +174,9 @@ router.post("/register", ...publicWrite, async (req, res, next) => {
 
     const nullifier = deriveNullifier(subjectId, appContext);
     const { commitmentHash } = deriveCommitment(subjectId);
+    // capture subject for the JWT claim — used by /verify to recompute
+    // the expected nullifier from (subject_id, app_context) + master key.
+    const subjectIdForBadge = subjectId;
 
     const existing = await db
       .select({ nullifier: commitmentsTable.nullifier })
@@ -216,6 +222,7 @@ router.post("/register", ...publicWrite, async (req, res, next) => {
       audience: req.apiContext.project.id,
       nullifier,
       appContext,
+      subjectId: subjectIdForBadge,
     });
 
     res.json({
@@ -280,6 +287,32 @@ router.post("/verify", ...publicWrite, async (req, res, next) => {
         verified: false,
         verifiedAt: now.toISOString(),
         message: "App context does not match the badge",
+      });
+      return;
+    }
+
+    // Deterministic recomputation: derive the expected nullifier from the
+    // subject_id claim and the *requested* appContext using the server's
+    // master HMAC secret, then compare to the nullifier embedded in the
+    // badge. This makes the badge's `nullifier` claim a redundant check,
+    // not a trust anchor — a forged claim with mismatched (subject_id,
+    // app_context) is rejected even if the JWT signature itself verifies.
+    if (!claims.subject_id) {
+      await incrementStats("failure");
+      res.json({
+        verified: false,
+        verifiedAt: now.toISOString(),
+        message: "Badge is missing subject binding",
+      });
+      return;
+    }
+    const expectedNullifier = deriveNullifier(claims.subject_id, appContext);
+    if (expectedNullifier !== claims.nullifier) {
+      await incrementStats("failure");
+      res.json({
+        verified: false,
+        verifiedAt: now.toISOString(),
+        message: "Nullifier does not match recomputation from subject + app_context",
       });
       return;
     }

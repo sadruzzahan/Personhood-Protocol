@@ -25,17 +25,15 @@ app.listen(port, (err) => {
   }
 
   logger.info({ port }, "Server listening");
-  // Fail fast in production if the master HMAC secret is missing; in dev
-  // the loader logs a warning and uses a stable insecure fallback.
+  // Fail fast in production if any required key material is missing.
+  // In dev both loaders log a warning and use stable/ephemeral fallbacks.
   try {
     ensureNullifierSecretLoaded();
+    ensureSigningKey();
   } catch (e) {
-    logger.error({ err: e }, "Nullifier master secret missing — refusing to serve");
+    logger.error({ err: e }, "Required key material missing — refusing to serve");
     process.exit(1);
   }
-  ensureSigningKey().catch((keyErr) => {
-    logger.error({ err: keyErr }, "Failed to ensure JWT signing key");
-  });
   ensureDemoApiKey().catch((bootstrapErr) => {
     logger.warn({ err: bootstrapErr }, "Demo API key bootstrap failed");
   });

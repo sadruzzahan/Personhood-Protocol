@@ -92,6 +92,20 @@ export function Demo() {
   const [inquiryId, setInquiryId] = useState<string | null>(null);
   const [vendor, setVendor] = useState<"mock" | "persona">("mock");
   const [hostedUrl, setHostedUrl] = useState<string | null>(null);
+  const [mode, setMode] = useState<"mock" | "persona">("mock");
+
+  // Server returns { error: { code, message, request_id } }; the generic
+  // fetch wrapper only knows how to extract flat message/detail/title fields,
+  // so we unwrap the envelope ourselves to surface a meaningful message.
+  function extractServerError(err: unknown, fallback: string): string {
+    const data = (err as { data?: { error?: { code?: string; message?: string } } })?.data;
+    const code = data?.error?.code;
+    const message = data?.error?.message;
+    if (message && code) return `${code}: ${message}`;
+    if (message) return message;
+    if (code) return code;
+    return (err as { message?: string })?.message ?? fallback;
+  }
   const [commitmentResult, setCommitmentResult] = useState<CommitmentResult | null>(null);
   const [hashProgress, setHashProgress] = useState(0);
   const [proofProgress, setProofProgress] = useState(0);
@@ -132,7 +146,7 @@ export function Demo() {
     setScanning(true);
     refetchHealth().catch(() => { /* health probe is best-effort */ });
     createInquiryMutation.mutate(
-      { data: { referenceId: referenceId.current } },
+      { data: { referenceId: referenceId.current, mode } },
       {
         onSuccess: (result) => {
           setInquiryId(result.inquiryId);
@@ -146,8 +160,7 @@ export function Demo() {
           }
         },
         onError: (err: unknown) => {
-          const msg = (err as { message?: string })?.message ?? "Failed to start inquiry";
-          setError(msg);
+          setError(extractServerError(err, "Failed to start inquiry"));
         },
       },
     );
@@ -213,8 +226,7 @@ export function Demo() {
           setHashProgress(1);
         },
         onError: (err: unknown) => {
-          const msg = (err as { message?: string })?.message ?? "Registration failed";
-          setError(msg);
+          setError(extractServerError(err, "Registration failed"));
         },
       },
     );
@@ -245,8 +257,7 @@ export function Demo() {
             setStep(4);
           },
           onError: (err: unknown) => {
-            const msg = (err as { message?: string })?.message ?? "Verification failed";
-            setError(msg);
+            setError(extractServerError(err, "Verification failed"));
           },
         },
       );
@@ -296,6 +307,28 @@ export function Demo() {
             </div>
             <div className="font-mono text-xs text-muted-foreground bg-background border border-border px-4 py-2 w-full text-left">
               Reference: <span className="text-primary">{referenceId.current}</span>
+            </div>
+            <div className="w-full grid grid-cols-2 gap-3" data-testid="mode-toggle">
+              <button
+                type="button"
+                onClick={() => setMode("mock")}
+                data-testid="button-mode-mock"
+                aria-pressed={mode === "mock"}
+                className={`border py-3 px-3 font-mono text-xs text-left transition-colors ${mode === "mock" ? "border-primary text-primary bg-primary/5" : "border-border text-muted-foreground hover:border-primary/40"}`}
+              >
+                <div className="font-medium tracking-widest uppercase mb-1">Quick simulation</div>
+                <div className="text-[11px] leading-snug normal-case">Auto-approves locally so you can run the full flow without a Persona account.</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode("persona")}
+                data-testid="button-mode-persona"
+                aria-pressed={mode === "persona"}
+                className={`border py-3 px-3 font-mono text-xs text-left transition-colors ${mode === "persona" ? "border-primary text-primary bg-primary/5" : "border-border text-muted-foreground hover:border-primary/40"}`}
+              >
+                <div className="font-medium tracking-widest uppercase mb-1">Real verification (sandbox)</div>
+                <div className="text-[11px] leading-snug normal-case">Opens the actual Persona hosted flow. Requires PERSONA_API_KEY.</div>
+              </button>
             </div>
             <button
               className="w-full bg-primary text-primary-foreground py-3 font-medium text-sm hover:bg-primary/90 transition-colors"

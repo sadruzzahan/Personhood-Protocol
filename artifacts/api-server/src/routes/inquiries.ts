@@ -7,7 +7,7 @@ import { requireApiKey } from "../middlewares/apiKeyAuth";
 import { rateLimit } from "../middlewares/rateLimit";
 import { requestLoggerMiddleware } from "../middlewares/requestLogger";
 import { idempotencyMiddleware } from "../middlewares/idempotency";
-import { getVendor } from "../lib/vendor";
+import { getVendor, getVendorByName } from "../lib/vendor";
 import { newId } from "../lib/ids";
 
 const CreateInquiryBody = z.object({
@@ -15,6 +15,9 @@ const CreateInquiryBody = z.object({
   // correlate the hosted flow back to their own user record.
   referenceId: z.string().min(1).max(128).optional(),
   redirectUri: z.string().url().max(512).optional(),
+  // Optional explicit vendor selection. Demo UI surfaces this as a
+  // "Quick simulation" vs "Real verification (sandbox)" toggle.
+  mode: z.enum(["mock", "persona"]).optional(),
 });
 
 const PollInquiryParams = z.object({
@@ -47,9 +50,27 @@ router.post("/inquiries", ...writeStack, async (req, res, next) => {
         details: parsed.error.message,
       });
     }
-    const vendor = getVendor();
+    let vendor;
+    if (parsed.data.mode) {
+      const requested = getVendorByName(parsed.data.mode);
+      if (!requested) {
+        throw new ApiError({
+          code: "vendor_unavailable",
+          status: 422,
+          message: `Vendor "${parsed.data.mode}" is not configured on this server.`,
+        });
+      }
+      vendor = requested;
+    } else {
+      vendor = getVendor();
+    }
+    // Always prefix the reference id with the project id so the webhook
+    // handler can attribute out-of-band events (where the persona_inquiries
+    // row doesn't exist yet) to the correct project.
     const referenceId =
-      parsed.data.referenceId ?? `${req.apiContext.project.id}:${newId("ref")}`;
+      parsed.data.referenceId
+        ? `${req.apiContext.project.id}:${parsed.data.referenceId}`
+        : `${req.apiContext.project.id}:${newId("ref")}`;
     let session;
     try {
       session = await vendor.createInquiry({
@@ -115,10 +136,14 @@ router.get("/inquiries/:inquiryId", ...readStack, async (req, res, next) => {
     // Pull the latest from the vendor so callers can poll without us
     // requiring webhooks for the demo flow. Webhooks still update the
     // canonical row when delivered.
-    const vendor = getVendor();
+    // Resolve vendor from the row so polling targets the same vendor that
+    // originally minted the inquiry, not the server's current default.
     let latest = null;
     try {
-      latest = await vendor.getInquiry(inquiryId);
+      const vendor = getVendorByName(row.vendor);
+      if (vendor) {
+        latest = await vendor.getInquiry(inquiryId);
+      }
     } catch {
       latest = null;
     }

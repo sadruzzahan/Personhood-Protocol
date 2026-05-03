@@ -20,6 +20,7 @@ machine-readable `error.code` and the `request_id` for log correlation.
 
 export * from "./conflictResponse";
 export * from "./createInquiryRequest";
+export * from "./createInquiryRequestMode";
 export * from "./errorEnvelope";
 export * from "./errorEnvelopeError";
 export * from "./errorEnvelopeErrorCode";

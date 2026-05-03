@@ -1,5 +1,4 @@
 import { generateKeyPairSync, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
 import {
   exportJWK,
   importPKCS8,
@@ -7,8 +6,8 @@ import {
   jwtVerify,
   SignJWT,
   type JWK,
+  type JWSHeaderParameters,
 } from "jose";
-import { db, jwtKeysTable, type JwtKey } from "@workspace/db";
 import { logger } from "./logger";
 
 const ALG = "RS256";
@@ -20,68 +19,119 @@ export interface HumanBadgeClaims {
   aud: string;
   nullifier: string;
   app_context: string;
+  /**
+   * Vendor-derived, one-way subject identifier embedded in the badge so
+   * /verify can recompute the expected nullifier deterministically from
+   * (subject_id, app_context) and the master HMAC secret. The vendor
+   * subject is itself a one-way hash of the underlying account id, so
+   * embedding it does not leak PII.
+   */
+  subject_id: string;
   iat: number;
   exp: number;
 }
 
-/** Cache the active key in memory to avoid a DB round-trip per signature. */
-let activeKeyCache: { key: JwtKey; expiresAt: number } | null = null;
-const ACTIVE_KEY_CACHE_MS = 60_000;
+interface SigningKeypair {
+  kid: string;
+  privatePem: string;
+  publicPem: string;
+}
+
+interface ResolvedKeyMaterial {
+  active: SigningKeypair;
+  // Public-key map keyed by kid so previously-issued badges still verify
+  // during a deprecation window (deprecated keys are loaded from
+  // JWT_DEPRECATED_PUBLIC_KEYS_JSON, see loadKeys()).
+  publicByKid: Map<string, { publicPem: string; alg: string }>;
+}
+
+let resolved: ResolvedKeyMaterial | null = null;
+// Caches of the parsed crypto key objects keyed by kid so we don't pay
+// the import cost on every sign/verify.
+const privateKeyCache = new Map<string, Awaited<ReturnType<typeof importPKCS8>>>();
+const publicKeyCache = new Map<string, Awaited<ReturnType<typeof importSPKI>>>();
 
 function issuer(): string {
   return process.env.JWT_ISSUER ?? "https://proof-of-personhood.local";
 }
 
-async function loadActiveKey(): Promise<JwtKey> {
-  if (activeKeyCache && activeKeyCache.expiresAt > Date.now()) {
-    return activeKeyCache.key;
-  }
-  const [active] = await db
-    .select()
-    .from(jwtKeysTable)
-    .where(eq(jwtKeysTable.status, "active"))
-    .limit(1);
-  if (!active) {
-    throw new Error(
-      "No active JWT signing key found. ensureSigningKey() must run on boot.",
+/**
+ * Load JWT signing material from environment variables. In production all
+ * three of JWT_PRIVATE_KEY_PEM, JWT_PUBLIC_KEY_PEM, JWT_KID are required —
+ * we throw on startup if any is missing so the server fails fast instead
+ * of silently issuing badges from an ephemeral key.
+ *
+ * In development we tolerate missing keys by generating a per-process
+ * ephemeral keypair and logging a loud warning. Restarting the dev server
+ * invalidates previously-issued badges, which is the desired loud signal.
+ *
+ * Optional JWT_DEPRECATED_PUBLIC_KEYS_JSON can hold an array of
+ * { kid, publicPem } entries so badges signed by a previously-active key
+ * still verify after rotation.
+ */
+function loadKeys(): ResolvedKeyMaterial {
+  if (resolved) return resolved;
+
+  const privatePem = process.env.JWT_PRIVATE_KEY_PEM;
+  const publicPem = process.env.JWT_PUBLIC_KEY_PEM;
+  const kid = process.env.JWT_KID;
+
+  let active: SigningKeypair;
+  if (privatePem && publicPem && kid) {
+    active = { kid, privatePem, publicPem };
+  } else {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        "JWT signing keys missing — set JWT_PRIVATE_KEY_PEM, JWT_PUBLIC_KEY_PEM and JWT_KID as Replit Secrets. Generate with `openssl genrsa 2048 | tee /tmp/p.pem | openssl pkcs8 -topk8 -nocrypt && openssl rsa -in /tmp/p.pem -pubout`.",
+      );
+    }
+    const { publicKey, privateKey } = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    const ephemeralKid = `dev_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    active = { kid: ephemeralKid, privatePem: privateKey, publicPem: publicKey };
+    logger.warn(
+      { kid: ephemeralKid },
+      "JWT signing keys not set — generated ephemeral dev keypair. Previously-issued badges will not verify across restarts. Set JWT_PRIVATE_KEY_PEM/JWT_PUBLIC_KEY_PEM/JWT_KID to persist.",
     );
   }
-  activeKeyCache = { key: active, expiresAt: Date.now() + ACTIVE_KEY_CACHE_MS };
-  return active;
+
+  const publicByKid = new Map<string, { publicPem: string; alg: string }>();
+  publicByKid.set(active.kid, { publicPem: active.publicPem, alg: ALG });
+
+  const deprecatedRaw = process.env.JWT_DEPRECATED_PUBLIC_KEYS_JSON;
+  if (deprecatedRaw) {
+    try {
+      const parsed = JSON.parse(deprecatedRaw) as Array<{
+        kid: string;
+        publicPem: string;
+        alg?: string;
+      }>;
+      for (const entry of parsed) {
+        if (entry?.kid && entry?.publicPem && !publicByKid.has(entry.kid)) {
+          publicByKid.set(entry.kid, {
+            publicPem: entry.publicPem,
+            alg: entry.alg ?? ALG,
+          });
+        }
+      }
+    } catch (err) {
+      logger.error({ err }, "Failed to parse JWT_DEPRECATED_PUBLIC_KEYS_JSON");
+    }
+  }
+
+  resolved = { active, publicByKid };
+  return resolved;
 }
 
-/** Generate an RSA-2048 keypair and persist it as the active key. */
-async function generateAndPersistActive(): Promise<JwtKey> {
-  const { publicKey, privateKey } = generateKeyPairSync("rsa", {
-    modulusLength: 2048,
-    publicKeyEncoding: { type: "spki", format: "pem" },
-    privateKeyEncoding: { type: "pkcs8", format: "pem" },
-  });
-  const kid = `kid_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
-  const inserted = await db
-    .insert(jwtKeysTable)
-    .values({
-      kid,
-      publicPem: publicKey,
-      privatePem: privateKey,
-      alg: ALG,
-      status: "active",
-    })
-    .returning();
-  logger.info({ kid }, "Generated new JWT signing key (RS256)");
-  activeKeyCache = { key: inserted[0], expiresAt: Date.now() + ACTIVE_KEY_CACHE_MS };
-  return inserted[0];
-}
-
-/** Boot-time hook. Idempotent: only generates a key if no active one exists. */
-export async function ensureSigningKey(): Promise<void> {
-  const [existing] = await db
-    .select({ kid: jwtKeysTable.kid })
-    .from(jwtKeysTable)
-    .where(eq(jwtKeysTable.status, "active"))
-    .limit(1);
-  if (existing) return;
-  await generateAndPersistActive();
+/**
+ * Boot-time hook. Throws if signing keys are required but absent. Safe to
+ * call multiple times — subsequent calls hit the cached resolution.
+ */
+export function ensureSigningKey(): void {
+  loadKeys();
 }
 
 export async function signHumanBadge(args: {
@@ -89,16 +139,22 @@ export async function signHumanBadge(args: {
   audience: string; // project id
   nullifier: string;
   appContext: string;
+  subjectId: string;
 }): Promise<{ token: string; expiresAt: Date }> {
-  const key = await loadActiveKey();
-  const privateKey = await importPKCS8(key.privatePem, ALG);
+  const { active } = loadKeys();
+  let privateKey = privateKeyCache.get(active.kid);
+  if (!privateKey) {
+    privateKey = await importPKCS8(active.privatePem, ALG);
+    privateKeyCache.set(active.kid, privateKey);
+  }
   const now = Math.floor(Date.now() / 1000);
   const exp = now + BADGE_TTL_SECONDS;
   const token = await new SignJWT({
     nullifier: args.nullifier,
     app_context: args.appContext,
+    subject_id: args.subjectId,
   })
-    .setProtectedHeader({ alg: ALG, kid: key.kid, typ: "JWT" })
+    .setProtectedHeader({ alg: ALG, kid: active.kid, typ: "JWT" })
     .setIssuer(issuer())
     .setSubject(args.commitmentHash)
     .setAudience(args.audience)
@@ -108,32 +164,38 @@ export async function signHumanBadge(args: {
   return { token, expiresAt: new Date(exp * 1000) };
 }
 
+async function resolveKey(header: JWSHeaderParameters) {
+  const kid = header.kid;
+  if (!kid) throw new Error("JWT missing kid header");
+  const cached = publicKeyCache.get(kid);
+  if (cached) return cached;
+  const { publicByKid } = loadKeys();
+  const entry = publicByKid.get(kid);
+  if (!entry) throw new Error(`Unknown signing key: ${kid}`);
+  const key = await importSPKI(entry.publicPem, entry.alg);
+  publicKeyCache.set(kid, key);
+  return key;
+}
+
 export async function verifyHumanBadge(token: string): Promise<HumanBadgeClaims> {
-  // Resolve key by kid from the header so deprecated keys still verify
-  // until they are removed from the JWKS.
-  const { resolveKey } = await import("./jwksResolver");
   const { payload } = await jwtVerify(token, resolveKey, {
     issuer: issuer(),
     algorithms: [ALG],
   });
-  // jose returns the standard claims plus our custom ones; the cast is
-  // safe because we set them ourselves at sign time.
   return payload as unknown as HumanBadgeClaims;
 }
 
 /**
- * Public keys for /.well-known/jwks.json. Includes deprecated keys too,
- * so already-issued badges signed with the previous active key still
- * verify during the deprecation grace period (manual cleanup via runbook
- * removes the row entirely once retired).
+ * Public keys for /.well-known/jwks.json. Includes the active key plus
+ * any deprecated keys still in the publication window.
  */
 export async function listPublicJwks(): Promise<{ keys: JWK[] }> {
-  const rows = await db.select().from(jwtKeysTable);
+  const { publicByKid } = loadKeys();
   const keys: JWK[] = await Promise.all(
-    rows.map(async (row) => {
-      const pub = await importSPKI(row.publicPem, row.alg);
+    Array.from(publicByKid.entries()).map(async ([kid, entry]) => {
+      const pub = await importSPKI(entry.publicPem, entry.alg);
       const jwk = await exportJWK(pub);
-      return { ...jwk, kid: row.kid, alg: row.alg, use: "sig" } as JWK;
+      return { ...jwk, kid, alg: entry.alg, use: "sig" } as JWK;
     }),
   );
   return { keys };

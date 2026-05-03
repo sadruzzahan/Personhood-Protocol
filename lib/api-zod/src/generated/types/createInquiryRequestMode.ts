@@ -17,23 +17,18 @@ machine-readable `error.code` and the `request_id` for log correlation.
 
  * OpenAPI spec version: 0.1.0
  */
-import type { CreateInquiryRequestMode } from "./createInquiryRequestMode";
 
-export interface CreateInquiryRequest {
-  /**
-   * Optional opaque id you can use to correlate this inquiry back to your own user record.
-   * @maxLength 128
-   */
-  referenceId?: string;
-  /**
-   * Where the hosted flow should send the user after completion.
-   * @maxLength 512
-   */
-  redirectUri?: string;
-  /** Optional explicit vendor selection. `mock` runs the auto-approving in-process
+/**
+ * Optional explicit vendor selection. `mock` runs the auto-approving in-process
 simulator (works without external credentials); `persona` opens the real Persona
 hosted flow (requires PERSONA_API_KEY + PERSONA_TEMPLATE_ID server-side). When
 omitted the server falls back to its default vendor.
+
  */
-  mode?: CreateInquiryRequestMode;
-}
+export type CreateInquiryRequestMode =
+  (typeof CreateInquiryRequestMode)[keyof typeof CreateInquiryRequestMode];
+
+export const CreateInquiryRequestMode = {
+  mock: "mock",
+  persona: "persona",
+} as const;

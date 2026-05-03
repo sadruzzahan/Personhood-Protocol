@@ -84,6 +84,12 @@ export const CreateInquiryBody = zod.object({
     .max(createInquiryBodyRedirectUriMax)
     .optional()
     .describe("Where the hosted flow should send the user after completion."),
+  mode: zod
+    .enum(["mock", "persona"])
+    .optional()
+    .describe(
+      "Optional explicit vendor selection. `mock` runs the auto-approving in-process\nsimulator (works without external credentials); `persona` opens the real Persona\nhosted flow (requires PERSONA_API_KEY + PERSONA_TEMPLATE_ID server-side). When\nomitted the server falls back to its default vendor.\n",
+    ),
 });
 
 export const CreateInquiryResponse = zod.object({

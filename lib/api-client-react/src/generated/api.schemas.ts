@@ -48,6 +48,21 @@ startup, and this check verifies that bootstrap completed).
   checks?: ReadinessStatusChecks;
 }
 
+/**
+ * Optional explicit vendor selection. `mock` runs the auto-approving in-process
+simulator (works without external credentials); `persona` opens the real Persona
+hosted flow (requires PERSONA_API_KEY + PERSONA_TEMPLATE_ID server-side). When
+omitted the server falls back to its default vendor.
+
+ */
+export type CreateInquiryRequestMode =
+  (typeof CreateInquiryRequestMode)[keyof typeof CreateInquiryRequestMode];
+
+export const CreateInquiryRequestMode = {
+  mock: "mock",
+  persona: "persona",
+} as const;
+
 export interface CreateInquiryRequest {
   /**
    * Optional opaque id you can use to correlate this inquiry back to your own user record.
@@ -59,6 +74,12 @@ export interface CreateInquiryRequest {
    * @maxLength 512
    */
   redirectUri?: string;
+  /** Optional explicit vendor selection. `mock` runs the auto-approving in-process
+simulator (works without external credentials); `persona` opens the real Persona
+hosted flow (requires PERSONA_API_KEY + PERSONA_TEMPLATE_ID server-side). When
+omitted the server falls back to its default vendor.
+ */
+  mode?: CreateInquiryRequestMode;
 }
 
 export type InquirySessionVendor =
